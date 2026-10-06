@@ -14,7 +14,12 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path, PurePosixPath
 from urllib.parse import quote, unquote, urlsplit
 
-from ..app.application_history import applied_company_tokens, company_was_applied
+from ..app.application_history import (
+    applied_company_tokens,
+    applied_url_keys,
+    company_was_applied,
+    url_was_applied,
+)
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
@@ -248,6 +253,11 @@ def _csv_preview(path: Path, relative: str | None = None) -> str:
         (index for index, value in enumerate(rows[0]) if value.strip().casefold() in {"company", "company_name", "公司"}),
         None,
     )
+    url_columns = [
+        index for index, value in enumerate(rows[0])
+        if value.strip().casefold().replace("-", "_") in ACTION_LINK_COLUMNS
+        or value.strip().casefold().endswith("_url")
+    ]
     relative_parts = PurePosixPath(relative).parts
     is_target_export = (
         len(relative_parts) >= 3
@@ -259,13 +269,26 @@ def _csv_preview(path: Path, relative: str | None = None) -> str:
         if is_target_export and company_column is not None
         else set()
     )
-    applied_count = (
-        sum(
-            company_was_applied(row[company_column] if company_column < len(row) else "", applied_tokens)
-            for row in rows[1:]
+    applied_links = applied_url_keys(APPLICATION_HISTORY) if is_target_export else set()
+
+    def row_was_applied(row: list[str]) -> bool:
+        company_match = (
+            company_column is not None
+            and company_was_applied(
+                row[company_column] if company_column < len(row) else "",
+                applied_tokens,
+            )
         )
-        if company_column is not None
-        else 0
+        link_match = any(
+            url_was_applied(row[index], applied_links)
+            for index in url_columns
+            if index < len(row) and row[index]
+        )
+        return company_match or link_match
+
+    applied_count = (
+        sum(row_was_applied(row) for row in rows[1:])
+        if company_column is not None or url_columns else 0
     )
     column_kinds = [_column_kind(value) for value in rows[0]]
     display_order = sorted(
@@ -287,9 +310,7 @@ def _csv_preview(path: Path, relative: str | None = None) -> str:
     body = "".join(
         "<tr data-search=\"{}\" data-applied=\"{}\">{}</tr>".format(
             html.escape(" ".join(row).casefold(), quote=True),
-            "true" if company_column is not None and company_was_applied(
-                row[company_column] if company_column < len(row) else "", applied_tokens
-            ) else "false",
+            "true" if row_was_applied(row) else "false",
             "".join(
                 f'<td class="{column_kinds[index]}" data-value="{html.escape(value, quote=True)}">{_csv_cell(value)}</td>'
                 for index in display_order
