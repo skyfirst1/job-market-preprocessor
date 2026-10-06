@@ -96,7 +96,7 @@ def test_csv_preview_hides_detail_and_machine_id_columns_without_removing_search
     assert "显示详情列（6）" in preview
     assert '<th scope="col" data-column="0" class="column-company"' in preview
     assert '<th scope="col" data-column="1" class="column-role"' in preview
-    assert '<th scope="col" data-column="2" class="column-compact"' in preview
+    assert '<th scope="col" data-column="2" class=""' in preview
     assert '<th scope="col" data-column="3" class="detail-column"' in preview
     assert '<th scope="col" data-column="4" class="detail-column"' in preview
     assert 'class="detail-column" data-value="company-123"' in preview
@@ -118,8 +118,8 @@ def test_target_column_policy_keeps_action_links_visible_and_source_details_hidd
     for name in ("company_id", "jd_id", "source_pool", "source_row", "source_url", "page_title", "fetch_status"):
         assert _column_kind(name) == "detail-column"
     assert _column_kind("structured_job_title") == "detail-column"
-    assert _column_kind("application_url") == ""
-    assert _column_kind("structured_job_url") == ""
+    assert _column_kind("application_url") == "column-link"
+    assert _column_kind("structured_job_url") == "column-link"
 
 
 def test_target_preview_hides_applied_companies_by_default(tmp_path, monkeypatch):
@@ -138,7 +138,44 @@ def test_target_preview_hides_applied_companies_by_default(tmp_path, monkeypatch
     assert "显示已投（1）" in preview
     assert 'data-applied="true"' in preview
     assert 'data-applied="false"' in preview
+
+
+def test_combined_target_preview_uses_application_history(tmp_path, monkeypatch):
+    history = tmp_path / "工作.md"
+    history.write_text(
+        "| company | 状态 |\n| --- | --- |\n| 拓竹 | 已投 |\n",
+        encoding="utf-8",
+    )
+    target = tmp_path / "applicable_companies.csv"
+    target.write_text("company\n拓竹科技\n其他公司\n", encoding="utf-8")
+    monkeypatch.setattr("jobprep.runner.dashboard_server.APPLICATION_HISTORY", history)
+
+    preview = _csv_preview(
+        target,
+        "exports/targets_combined/applicable_companies.csv",
+    )
+
+    assert "显示已投（1）" in preview
     assert "显示 1 / 2 行" in preview
+
+
+def test_preview_moves_action_link_forward_and_uses_narrow_numeric_columns(tmp_path):
+    target = tmp_path / "applicable_companies.csv"
+    target.write_text(
+        "screening_scope,company,industry,best_priority,matched_role_count,application_url\n"
+        "manufacturing,测试公司,制造业,1,2,https://example.com/apply\n",
+        encoding="utf-8",
+    )
+
+    preview = _csv_preview(
+        target,
+        "exports/targets_combined/applicable_companies.csv",
+    )
+
+    assert preview.index(">company</th>") < preview.index(">application_url</th>")
+    assert preview.index(">application_url</th>") < preview.index(">screening_scope</th>")
+    assert 'data-column="3" class="column-narrow"' in preview
+    assert 'data-column="4" class="column-narrow"' in preview
 
 
 def test_preview_page_and_raw_endpoint_are_inline():

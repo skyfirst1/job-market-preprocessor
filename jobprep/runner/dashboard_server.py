@@ -144,25 +144,20 @@ DETAIL_COLUMN_NAMES = {
 }
 PRIMARY_COMPANY_COLUMNS = {"company", "company_name", "公司", "公司名称"}
 PRIMARY_ROLE_COLUMNS = {"role", "role_title", "job_title", "岗位", "岗位名称", "职位", "职位名称"}
+ACTION_LINK_COLUMNS = {"application_url", "apply_url", "job_url", "structured_job_url", "url", "投递链接"}
+NARROW_COLUMN_NAMES = {
+    "priority", "best_priority", "matched_role_count", "structured_jobs_count", "优先级",
+}
 COMPACT_COLUMN_NAMES = {
-    "location",
-    "city",
     "category",
-    "priority",
     "priority_label",
-    "best_priority",
     "status",
     "target_status",
     "jd_status",
     "ownership_status",
-    "matched_role_count",
-    "structured_jobs_count",
     "recruitment_type",
     "enterprise_nature",
-    "地点",
-    "城市",
     "类别",
-    "优先级",
     "状态",
 }
 
@@ -181,7 +176,7 @@ main{{padding:14px}} pre{{margin:0;padding:14px;background:#fff;border:1px solid
 .table-wrap{{max-height:calc(100vh - 122px);overflow:auto;background:#fff;border:1px solid #d0d5dd}} table{{border-collapse:separate;border-spacing:0;width:max-content;min-width:100%;table-layout:fixed;font-size:14px}}
 th,td{{border-right:1px solid #e1e5ea;border-bottom:1px solid #e1e5ea;padding:9px 10px;text-align:left;vertical-align:top;width:150px;min-width:150px;max-width:240px;white-space:normal;overflow-wrap:anywhere}}
 th.column-company,td.column-company{{position:sticky;left:0;width:190px;min-width:190px;max-width:240px;background:#fff;z-index:1;box-shadow:1px 0 #d0d5dd}}
-th.column-company{{z-index:4;background:#eef2f3}}th.column-role,td.column-role{{width:260px;min-width:220px;max-width:340px}}th.column-compact,td.column-compact{{width:120px;min-width:100px;max-width:150px}}
+th.column-company{{z-index:4;background:#eef2f3}}th.column-role,td.column-role{{width:260px;min-width:220px;max-width:340px}}th.column-link,td.column-link{{width:260px;min-width:220px;max-width:320px}}th.column-compact,td.column-compact{{width:108px;min-width:88px;max-width:132px}}th.column-narrow,td.column-narrow{{width:72px;min-width:64px;max-width:84px;text-align:center;white-space:nowrap}}
 .detail-column{{display:none}}table.show-details .detail-column{{display:table-cell}}
 th{{position:sticky;top:0;z-index:2;background:#eef2f3;cursor:pointer;user-select:none;box-shadow:0 1px #d0d5dd}}th:hover{{background:#e1e8ec}}th::after{{content:" ↕";color:#98a2b3}}th[data-sort="asc"]::after{{content:" ↑";color:#087ea4}}th[data-sort="desc"]::after{{content:" ↓";color:#087ea4}}
 td a{{color:#087ea4;overflow-wrap:anywhere}}td details{{max-width:100%}}td summary{{cursor:pointer;color:#344054}}.cell-full{{margin-top:6px;padding-top:6px;border-top:1px solid #eaecf0}}tr[hidden]{{display:none}}
@@ -225,6 +220,10 @@ def _column_kind(name: str) -> str:
         return "column-company"
     if normalized in PRIMARY_ROLE_COLUMNS:
         return "column-role"
+    if normalized in ACTION_LINK_COLUMNS:
+        return "column-link"
+    if normalized in NARROW_COLUMN_NAMES:
+        return "column-narrow"
     if normalized in COMPACT_COLUMN_NAMES:
         return "column-compact"
     if (
@@ -249,9 +248,15 @@ def _csv_preview(path: Path, relative: str | None = None) -> str:
         (index for index, value in enumerate(rows[0]) if value.strip().casefold() in {"company", "company_name", "公司"}),
         None,
     )
+    relative_parts = PurePosixPath(relative).parts
+    is_target_export = (
+        len(relative_parts) >= 3
+        and relative_parts[0] == "exports"
+        and relative_parts[1].startswith("targets")
+    )
     applied_tokens = (
         applied_company_tokens(APPLICATION_HISTORY)
-        if relative.startswith("exports/targets/") and company_column is not None
+        if is_target_export and company_column is not None
         else set()
     )
     applied_count = (
@@ -263,10 +268,21 @@ def _csv_preview(path: Path, relative: str | None = None) -> str:
         else 0
     )
     column_kinds = [_column_kind(value) for value in rows[0]]
+    display_order = sorted(
+        range(width),
+        key=lambda index: (
+            0 if column_kinds[index] == "column-company" else
+            1 if column_kinds[index] == "column-role" else
+            2 if column_kinds[index] == "column-link" else
+            3 if rows[0][index].strip().casefold() == "screening_scope" else 4,
+            index,
+        ),
+    )
     detail_count = sum(kind == "detail-column" for kind in column_kinds)
     head = "".join(
         f'<th scope="col" data-column="{index}" class="{column_kinds[index]}" tabindex="0">{html.escape(value)}</th>'
-        for index, value in enumerate(rows[0])
+        for index in display_order
+        for value in (rows[0][index],)
     )
     body = "".join(
         "<tr data-search=\"{}\" data-applied=\"{}\">{}</tr>".format(
@@ -276,7 +292,8 @@ def _csv_preview(path: Path, relative: str | None = None) -> str:
             ) else "false",
             "".join(
                 f'<td class="{column_kinds[index]}" data-value="{html.escape(value, quote=True)}">{_csv_cell(value)}</td>'
-                for index, value in enumerate(row + [""] * (width - len(row)))
+                for index in display_order
+                for value in ((row + [""] * (width - len(row)))[index],)
             ),
         )
         for row in rows[1:]
