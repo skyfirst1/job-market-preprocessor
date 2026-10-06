@@ -2,7 +2,7 @@
 
 from copy import deepcopy
 from dataclasses import dataclass, field
-from urllib.parse import unquote, urljoin, urlsplit
+from urllib.parse import parse_qs, unquote, urljoin, urlsplit
 import math
 import re
 
@@ -30,6 +30,70 @@ def _list_url(url):
 def _landing(url):
     parts = http_url(url)
     return parts.path in {"", "/"} and parts.fragment in {"", "/"}
+
+
+def _single_job_identity(url):
+    """Return a stable job identifier only for an explicit detail URL."""
+    parts = http_url(url)
+    query = parse_qs(parts.query)
+    for key in ("jobAdId", "jobId"):
+        values = query.get(key)
+        if values and values[0].strip():
+            return values[0].strip()
+    match = re.search(r"(?:^|/)job/([^/?#]+)", unquote(parts.fragment), re.I)
+    return match.group(1) if match else None
+
+
+def _single_job_has_identity(job, identity):
+    if not isinstance(job, dict) or not identity:
+        return False
+    candidates = [job.get("id")]
+    raw = job.get("raw")
+    if isinstance(raw, dict):
+        candidates.extend(raw.get(key) for key in ("Id", "id", "JobAdId", "jobAdId", "jobId"))
+    job_url = job.get("url")
+    if isinstance(job_url, str):
+        try:
+            parts = http_url(job_url)
+            query = parse_qs(parts.query)
+            candidates.extend(value for key in ("jobAdId", "jobId")
+                              for value in query.get(key, []))
+            match = re.search(r"(?:^|/)job/([^/?#]+)", unquote(parts.fragment), re.I)
+            if match:
+                candidates.append(match.group(1))
+        except ValueError:
+            pass
+    return identity in {str(value).strip() for value in candidates if value is not None}
+
+
+def _finish_single_job(result, source_url):
+    """Promote a detail fetch only when its one-job boundary is auditable."""
+    coverage = result["coverage"]
+    coverage.update(scope="single_job", pagination_applied=False)
+    identity = _single_job_identity(source_url)
+    jobs = result.get("jobs") or []
+    job = jobs[0] if len(jobs) == 1 else None
+    text = job.get("text") if isinstance(job, dict) else None
+    verified = (result["status"] not in {"error", "blocked", "deleted"}
+                and isinstance(job, dict)
+                and isinstance(job.get("title"), str) and bool(job["title"].strip())
+                and isinstance(text, str) and len(text.strip()) >= 40
+                and _single_job_has_identity(job, identity))
+    if verified:
+        job["needs_details"] = False
+        result["status"] = "ok"
+        coverage.update(complete=True, list_complete=True, jd_complete=True,
+                        stop_reason="single_job_complete",
+                        completion_basis="stable_job_id_and_single_structured_job",
+                        detail_fetched=True, needs_details_count=0, detail_urls=[])
+    elif result["status"] not in {"error", "blocked", "deleted"}:
+        result["status"] = "partial"
+        coverage.update(complete=False, list_complete=False, jd_complete=False,
+                        stop_reason="single_job_evidence_incomplete")
+        warning = "Single-job URL did not yield one identity-matched structured job with substantive text"
+        if warning not in result["warnings"]:
+            result["warnings"].append(warning)
+    return result
 
 
 def _failure(url, reason, message):
@@ -323,12 +387,38 @@ class ZhiyeJobDetailPortal(BaseAdapter):
                               "browser_channel", "domain_delay", "delay"}}
         options.update(browser="auto", max_pages=1, max_scrolls=0, max_images=0)
         result = await context.call("web", context.url, options)
-        coverage = result["coverage"]
-        coverage.update(scope="single_job", pagination_applied=False)
-        if result["status"] == "ok":
-            coverage.update(complete=True, list_complete=True,
-                            stop_reason="single_job_complete")
+        result = _finish_single_job(result, context.url)
         context.provenance.append({"rule": "zhiye_single_job_route",
+                                   "url": context.url, "max_pages": 1})
+        return result
+
+
+class MokahrJobDetailPortal(BaseAdapter):
+    name = "MokahrJobDetailPortal"
+    priority = 95
+    scope = "Public Mokahr single-job fragment routes; bounded one-page extraction"
+    parameters = {
+        "timeout": {"type": "number", "default": 20, "range": "1..120 seconds"},
+        "settle_ms": {"type": "integer", "default": 1500, "range": "100..10000"},
+        "max_json_responses": {"type": "integer", "default": 40, "range": "1..200"},
+    }
+
+    def matches(self, url, options):
+        parts = http_url(url)
+        supported_path = re.search(
+            r"/(?:campus-recruitment|social-recruitment|campus_apply)/[^/]+/\d+",
+            parts.path,
+        )
+        return bool(supported_path and _single_job_identity(url))
+
+    async def acquire(self, context):
+        options = {key: deepcopy(value) for key, value in context.options.items()
+                   if key in {"timeout", "settle_ms", "max_json_responses",
+                              "browser_channel", "domain_delay", "delay"}}
+        options.update(browser="auto", max_pages=1, max_scrolls=0, max_images=0)
+        result = await context.call("web", context.url, options)
+        result = _finish_single_job(result, context.url)
+        context.provenance.append({"rule": "mokahr_single_job_route",
                                    "url": context.url, "max_pages": 1})
         return result
 
@@ -587,7 +677,7 @@ class AdapterRegistry:
             raise ValueError("config must be an object")
         self.config = deepcopy(config or {})
         self._adapters = {}
-        for adapter in (GenericWeb(), WechatImage(), WjxPublicForm(), Job51XYZPublicPortal(), Job51StaticPortal(), MokahrPublicPortal(), HotjobPublicPortal(),
+        for adapter in (GenericWeb(), WechatImage(), WjxPublicForm(), Job51XYZPublicPortal(), Job51StaticPortal(), MokahrJobDetailPortal(), MokahrPublicPortal(), HotjobPublicPortal(),
                         ZhiyeJobDetailPortal(), ZhiyePublicPortal(), FeishuPublicPortal(), ConfiguredPublicList()):
             self.register(adapter)
 

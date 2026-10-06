@@ -108,10 +108,45 @@ def test_complete_api_jds_do_not_enqueue_duplicate_fetches(tmp_path):
     task = workstation.store.claim()
     result = {'status': 'ok', 'jobs': [
         {'url': 'https://example.com/job/1', 'needs_details': False},
-        {'url': 'https://example.com/job/2', 'needs_details': True}], 'coverage': {}}
+        {'url': 'https://example.com/job/2', 'needs_details': True}],
+        'coverage': {'detail_urls': ['https://example.com/job/1']}}
     assert workstation._enqueue_details(task, result) == 1
     assert workstation.store.stats()['tasks'] == 2
     assert workstation.store.task(task_id) is not None
+
+
+def test_completed_single_job_result_does_not_enqueue_equivalent_detail(tmp_path):
+    workstation = Workstation(config(tmp_path))
+    source_url = "https://innoventbio.zhiye.com/campus/detail?jobAdId=abc"
+    task_id = workstation.store.add_task(source_url, priority=1, kind="job_detail")
+    task = workstation.store.claim()
+    result = {
+        "status": "ok",
+        "jobs": [{
+            "url": "https://innoventbio.zhiye.com/campus/jobdetails?jobId=123",
+            "needs_details": False,
+        }],
+        "coverage": {"detail_urls": [], "detail_fetched": True,
+                     "needs_details_count": 0},
+    }
+    assert workstation._enqueue_details(task, result) == 0
+    assert workstation.store.stats()["tasks"] == 1
+    assert workstation.store.task(task_id)["kind"] == "job_detail"
+
+
+def test_complete_parent_removes_only_pending_auto_detail_children(tmp_path):
+    workstation = Workstation(config(tmp_path))
+    parent = workstation.store.add_task('https://example.com/jobs', priority=1)
+    pending = workstation.store.add_task(
+        'https://example.com/job/1', priority=1, kind='job_detail', parent_id=parent
+    )
+    finished = workstation.store.add_task(
+        'https://example.com/job/2', priority=1, kind='job_detail', parent_id=parent
+    )
+    workstation.store.finish(finished, 'ok', {'status': 'ok'})
+    assert workstation.store.remove_pending_children(parent) == 1
+    assert workstation.store.task(pending) is None
+    assert workstation.store.task(finished)['status'] == 'ok'
 
 
 def test_old_database_migration_preserves_records(tmp_path):

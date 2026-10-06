@@ -145,8 +145,14 @@ def test_mokahr_legacy_campus_apply_route_uses_special_adapter():
 
 def test_zhiye_detail_is_bounded_single_job_web_extraction():
     url = "https://innoventbio.zhiye.com/campus/detail?jobAdId=abc"
-    tools = MockTools(doc(url, text="算法工程师 职位职责", coverage={"complete": True,
-                                                                    "list_complete": True}))
+    job = {"id": "generated", "title": "算法工程师",
+           "url": "https://innoventbio.zhiye.com/campus/jobdetails?jobId=123",
+           "text": ("负责模型训练、推理、评估与优化，使用深度学习框架完成算法研发和工程落地；"
+                    "维护训练数据、实验记录、性能基线及线上推理服务。"),
+           "raw": {"Id": "abc", "JobAdId": 123}}
+    tools = MockTools(doc(url, status="partial", jobs=[job],
+                          coverage={"complete": False, "list_complete": False,
+                                    "stop_reason": "unknown_pagination"}))
     result = acquire(tools, url, {"max_pages": 10, "max_scrolls": 8, "max_images": 8})
     call = tools.calls[0]
     assert call[0] == "web" and call[1] == url
@@ -155,6 +161,42 @@ def test_zhiye_detail_is_bounded_single_job_web_extraction():
     assert result["acquisition"]["adapter"] == "ZhiyeJobDetailPortal"
     assert result["coverage"]["scope"] == "single_job"
     assert result["coverage"]["stop_reason"] == "single_job_complete"
+    assert result["coverage"]["completion_basis"] == "stable_job_id_and_single_structured_job"
+    assert result["status"] == "ok" and result["coverage"]["jd_complete"]
+    assert result["jobs"][0]["needs_details"] is False
+    assert result["coverage"]["detail_urls"] == []
+    assert result["coverage"]["needs_details_count"] == 0
+
+
+def test_zhiye_detail_without_identity_matched_job_stays_partial():
+    url = "https://innoventbio.zhiye.com/campus/detail?jobAdId=missing"
+    tools = MockTools(doc(url, jobs=[], coverage={"complete": False,
+                                                  "list_complete": False,
+                                                  "stop_reason": "unknown_pagination"}))
+    result = acquire(tools, url)
+    assert result["status"] == "partial"
+    assert not result["coverage"]["complete"]
+    assert result["coverage"]["stop_reason"] == "single_job_evidence_incomplete"
+
+
+def test_mokahr_detail_is_not_rewritten_to_jobs_list():
+    job_id = "9cc574cb-9aae-430f-a7d7-789d2e76da7f"
+    url = ("https://app.mokahr.com/campus-recruitment/bayer/148388#/job/" + job_id
+           + "?from=qrcode&isRecommendation=undefined")
+    job = {"id": job_id, "title": "数据科学家", "url": url,
+           "text": ("负责机器学习模型的训练、评估、部署和持续优化，并维护可复现的工程管线；"
+                    "建立数据质量、离线指标、线上监控和回归测试机制。")}
+    tools = MockTools(doc(url, status="partial", jobs=[job],
+                          coverage={"complete": False, "list_complete": False,
+                                    "stop_reason": "terminal_pagination"}))
+    result = acquire(tools, url, {"max_pages": 30})
+    call = tools.calls[0]
+    assert result["acquisition"]["adapter"] == "MokahrJobDetailPortal"
+    assert call[0] == "web" and call[1] == url
+    assert call[3]["max_pages"] == 1 and call[3]["max_scrolls"] == 0
+    assert result["status"] == "ok"
+    assert result["coverage"]["stop_reason"] == "single_job_complete"
+    assert result["jobs"][0]["needs_details"] is False
 
 
 def test_hotjob_builds_bounded_public_list_config():
@@ -524,7 +566,7 @@ def test_catalog_extension_and_replacement():
     catalog = registry.describe()
     json.dumps(catalog, allow_nan=False)
     assert {item["name"] for item in catalog} == {
-        "Custom", "genericweb", "WechatImage", "WjxPublicForm", "Job51XYZPublicPortal", "Job51StaticPortal", "MokahrPublicPortal",
+        "Custom", "genericweb", "WechatImage", "WjxPublicForm", "Job51XYZPublicPortal", "Job51StaticPortal", "MokahrJobDetailPortal", "MokahrPublicPortal",
             "HotjobPublicPortal", "ZhiyeJobDetailPortal", "ZhiyePublicPortal", "FeishuPublicPortal",
         "ConfiguredPublicList",
     }

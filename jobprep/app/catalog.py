@@ -133,7 +133,8 @@ def tool_catalog():
                                      'options': P('object|null', None, properties=WEB_OPTIONS)},
                         'output': DOCUMENT_OUTPUT,
                         'limits': common + ['Fresh public browser session; no login profile',
-                                            'Observed public JobAd API only; PageSize capped at 100']},
+                                            'Observed public JobAd API only; 100 records per page and max_pages bounds pagination',
+                                            'A job skips detail fetch only when both structured Duty and Require are substantive']},
         'feishu_list': {'parameters': {'url': {**URL, 'range': 'HTTP(S) *.jobs.feishu.cn URL'}, 'artifact_dir': ARTIFACTS,
                                      'options': P('object|null', None, properties={
                                          'company': P('string', 'configured company', description='Unverified label'),

@@ -197,6 +197,23 @@ class Store:
                 args.extend(task_ids)
             return db.execute(query, args).rowcount
 
+    def remove_pending_children(self, parent_id, keep_urls=()):
+        """Remove auto-generated detail work made redundant by complete parent evidence."""
+        keep = {canonical_url(url) for url in keep_urls}
+        with self.connect() as db:
+            rows = db.execute(
+                """SELECT id,url FROM tasks
+                   WHERE parent_id=? AND kind='job_detail' AND status='pending'""",
+                (parent_id,),
+            ).fetchall()
+            removable = [row['id'] for row in rows if canonical_url(row['url']) not in keep]
+            if not removable:
+                return 0
+            placeholders = ','.join('?' for _ in removable)
+            db.execute(f'DELETE FROM source_tasks WHERE task_id IN ({placeholders})', removable)
+            db.execute(f'DELETE FROM tasks WHERE id IN ({placeholders})', removable)
+            return len(removable)
+
     def event(self, task_id, kind, detail):
         with self.connect() as db:
             db.execute('INSERT INTO events(timestamp,task_id,kind,detail) VALUES(?,?,?,?)',

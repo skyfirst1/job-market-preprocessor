@@ -14,10 +14,13 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path, PurePosixPath
 from urllib.parse import quote, unquote, urlsplit
 
+from ..app.application_history import applied_company_tokens, company_was_applied
+
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 DASHBOARD_ROOT = PROJECT_ROOT / "exports" / "operations_dashboard"
 URL_FILE = PROJECT_ROOT / "data" / "operations_dashboard_url.txt"
+APPLICATION_HISTORY = PROJECT_ROOT / "data" / "private" / "工作.md"
 ALLOWED_EXTENSIONS = {".csv", ".json", ".txt", ".html", ".md"}
 FIRST_BATCH_REPORTS = {
     "batch_summary.json",
@@ -110,7 +113,7 @@ header a{{color:#fff;font-weight:700;text-decoration:none}} header span{{overflo
 main{{padding:14px}} pre{{margin:0;padding:14px;background:#fff;border:1px solid #d0d5dd;white-space:pre-wrap;overflow-wrap:anywhere}}
 .csv-tools{{position:sticky;top:45px;z-index:3;display:flex;align-items:center;gap:12px;flex-wrap:wrap;padding:10px;background:#fff;border:1px solid #d0d5dd;border-bottom:0}}
 .csv-tools input{{flex:1 1 320px;min-width:180px;padding:7px 9px;border:1px solid #98a2b3;border-radius:4px;font:inherit}}
-.csv-count{{color:#475467;white-space:nowrap}}.csv-tools a{{color:#087ea4;text-decoration:none;font-weight:600}}
+.csv-count{{color:#475467;white-space:nowrap}}.csv-tools a{{color:#087ea4;text-decoration:none;font-weight:600}}.csv-tools label{{display:flex;align-items:center;gap:6px;white-space:nowrap}}
 .table-wrap{{max-height:calc(100vh - 122px);overflow:auto;background:#fff;border:1px solid #d0d5dd}} table{{border-collapse:separate;border-spacing:0;width:max-content;min-width:100%;table-layout:fixed;font-size:12px}}
 th,td{{border-right:1px solid #e1e5ea;border-bottom:1px solid #e1e5ea;padding:7px 8px;text-align:left;vertical-align:top;min-width:110px;max-width:360px;white-space:normal;overflow-wrap:anywhere}}
 th{{position:sticky;top:0;z-index:2;background:#eef2f3;cursor:pointer;user-select:none;box-shadow:0 1px #d0d5dd}}th:hover{{background:#e1e8ec}}th::after{{content:" ↕";color:#98a2b3}}th[data-sort="asc"]::after{{content:" ↑";color:#087ea4}}th[data-sort="desc"]::after{{content:" ↓";color:#087ea4}}
@@ -154,13 +157,34 @@ def _csv_preview(path: Path, relative: str | None = None) -> str:
     if not rows:
         return "<p>空 CSV 文件</p>"
     width = len(rows[0])
+    relative = relative or _relative(path)
+    company_column = next(
+        (index for index, value in enumerate(rows[0]) if value.strip().casefold() in {"company", "company_name", "公司"}),
+        None,
+    )
+    applied_tokens = (
+        applied_company_tokens(APPLICATION_HISTORY)
+        if relative.startswith("exports/targets/") and company_column is not None
+        else set()
+    )
+    applied_count = (
+        sum(
+            company_was_applied(row[company_column] if company_column < len(row) else "", applied_tokens)
+            for row in rows[1:]
+        )
+        if company_column is not None
+        else 0
+    )
     head = "".join(
         f'<th scope="col" data-column="{index}" tabindex="0">{html.escape(value)}</th>'
         for index, value in enumerate(rows[0])
     )
     body = "".join(
-        "<tr data-search=\"{}\">{}</tr>".format(
+        "<tr data-search=\"{}\" data-applied=\"{}\">{}</tr>".format(
             html.escape(" ".join(row).casefold(), quote=True),
+            "true" if company_column is not None and company_was_applied(
+                row[company_column] if company_column < len(row) else "", applied_tokens
+            ) else "false",
             "".join(
                 f'<td data-value="{html.escape(value, quote=True)}">{_csv_cell(value)}</td>'
                 for value in row + [""] * (width - len(row))
@@ -168,11 +192,16 @@ def _csv_preview(path: Path, relative: str | None = None) -> str:
         )
         for row in rows[1:]
     )
-    raw_href = "/raw/" + quote(relative or _relative(path), safe="/")
+    raw_href = "/raw/" + quote(relative, safe="/")
+    applied_control = (
+        f'<label><input id="show-applied" type="checkbox">显示已投（{applied_count}）</label>'
+        if applied_count else ""
+    )
     return f'''<div class="csv-tools">
 <input id="csv-search" type="search" placeholder="搜索当前 CSV…" aria-label="搜索当前 CSV">
-<span id="csv-count" class="csv-count">显示 {len(rows) - 1} / {len(rows) - 1} 行</span>
-<a href="{html.escape(raw_href, quote=True)}">下载原始 CSV</a>
+{applied_control}
+<span id="csv-count" class="csv-count">显示 {len(rows) - 1 - applied_count} / {len(rows) - 1} 行</span>
+<a href="{html.escape(raw_href, quote=True)}">下载原始 CSV（含已投）</a>
 </div>
 <div class="table-wrap"><table id="csv-table"><thead><tr>{head}</tr></thead><tbody>{body}</tbody></table></div>
 <script>
@@ -181,17 +210,21 @@ def _csv_preview(path: Path, relative: str | None = None) -> str:
   const tbody = table.tBodies[0];
   const rows = Array.from(tbody.rows);
   const search = document.getElementById('csv-search');
+  const showApplied = document.getElementById('show-applied');
   const count = document.getElementById('csv-count');
   const updateFilter = () => {{
     const query = search.value.trim().toLocaleLowerCase('zh-CN');
     let visible = 0;
     rows.forEach(row => {{
-      row.hidden = query !== '' && !row.dataset.search.includes(query);
+      const filteredBySearch = query !== '' && !row.dataset.search.includes(query);
+      const filteredByHistory = row.dataset.applied === 'true' && !(showApplied?.checked);
+      row.hidden = filteredBySearch || filteredByHistory;
       if (!row.hidden) visible += 1;
     }});
     count.textContent = `显示 ${{visible}} / ${{rows.length}} 行`;
   }};
   search.addEventListener('input', updateFilter);
+  showApplied?.addEventListener('change', updateFilter);
   const sortColumn = column => {{
     const header = table.tHead.rows[0].cells[column];
     const direction = header.dataset.sort === 'asc' ? 'desc' : 'asc';

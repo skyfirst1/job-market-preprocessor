@@ -53,7 +53,10 @@ class Workstation:
     def _enqueue_details(self, task, result):
         if result.get('status') in ('blocked', 'deleted', 'error'):
             return 0
-        urls = list(result.get('coverage', {}).get('detail_urls', []))
+        resolved = {job.get('url') for job in result.get('jobs', [])
+                    if job.get('url') and job.get('needs_details') is False}
+        urls = [url for url in result.get('coverage', {}).get('detail_urls', [])
+                if url not in resolved]
         urls.extend(job['url'] for job in result.get('jobs', [])
                     if job.get('url') and job.get('needs_details') is not False)
         urls = list(dict.fromkeys(url for url in urls if isinstance(url, str)))
@@ -144,6 +147,16 @@ class Workstation:
                     result['source_references'] = self.store.source_references(task['id'])
                     result['semantic_status'] = 'unassessed'
                     discovered = self._enqueue_details(task, result)
+                    coverage = result.setdefault('coverage', {})
+                    # Incidental images can make OCR coverage incomplete without invalidating
+                    # a fully enumerated list whose structured JDs are already complete.
+                    if coverage.get('list_complete') is True and coverage.get('jd_complete') is True:
+                        required = list(coverage.get('detail_urls', []))
+                        required.extend(job.get('url') for job in result.get('jobs', [])
+                                        if job.get('needs_details') is not False and job.get('url'))
+                        removed = self.store.remove_pending_children(task['id'], required)
+                        if removed:
+                            coverage['redundant_detail_tasks_removed'] = removed
                     status = self._persist(task, result)
                     self.store.event(task['id'], 'collected', f'status={status} discovered={discovered}')
                     results.append({'id': task['id'], 'url': task['url'], 'status': status,

@@ -70,6 +70,25 @@ def test_csv_preview_has_search_sort_counts_expansion_and_safe_links(tmp_path):
     assert 'href="/raw/data/sample.csv"' in preview
 
 
+def test_target_preview_hides_applied_companies_by_default(tmp_path, monkeypatch):
+    history = tmp_path / "工作.md"
+    history.write_text(
+        "| company | 状态 |\n| --- | --- |\n| 开立 | DL |\n| 贝壳 | 还没投 |\n",
+        encoding="utf-8",
+    )
+    csv_path = tmp_path / "targets.csv"
+    csv_path.write_text("company,role\n开立医疗,算法工程师\n贝壳找房,Agent工程师\n", encoding="utf-8")
+    monkeypatch.setattr("jobprep.runner.dashboard_server.APPLICATION_HISTORY", history)
+
+    preview = _csv_preview(csv_path, "exports/targets/applicable_companies.csv")
+
+    assert 'id="show-applied"' in preview
+    assert "显示已投（1）" in preview
+    assert 'data-applied="true"' in preview
+    assert 'data-applied="false"' in preview
+    assert "显示 1 / 2 行" in preview
+
+
 def test_preview_page_and_raw_endpoint_are_inline():
     catalog, groups = build_catalog()
     server = DashboardServer(("127.0.0.1", 0), DashboardHandler)
