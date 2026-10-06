@@ -112,13 +112,27 @@ def seed_valid_workstation_results(root: Path, pool: WechatPoolStore, items):
     return seeded
 
 
-def main():
+def parse_args(argv=None):
     parser = argparse.ArgumentParser(description="Durable single-worker WeChat acquisition pool")
     parser.add_argument("--root", type=Path, default=ROOT)
     parser.add_argument("--input", type=Path)
     parser.add_argument("--url", action="append", default=[])
     parser.add_argument("--limit", type=int, default=20)
-    parser.add_argument("--interval", type=float, default=10.0)
+    parser.add_argument(
+        "--min-interval",
+        type=float,
+        help="minimum seconds between article starts (default: 180)",
+    )
+    parser.add_argument(
+        "--max-interval",
+        type=float,
+        help="maximum seconds between article starts (default: 300)",
+    )
+    parser.add_argument(
+        "--interval",
+        type=float,
+        help="deprecated fixed interval; equivalent to setting min and max to the same value",
+    )
     parser.add_argument("--retry-failed", action="store_true")
     parser.add_argument("--enqueue-only", action="store_true")
     parser.add_argument("--no-ocr", action="store_true")
@@ -126,7 +140,28 @@ def main():
     parser.add_argument("--report", type=Path)
     parser.add_argument("--batch", default="wechat")
     parser.add_argument("--dashboard-agent", choices=("subagent1",), default="subagent1")
-    args = parser.parse_args()
+    args = parser.parse_args(argv)
+    if args.interval is not None and (
+        args.min_interval is not None or args.max_interval is not None
+    ):
+        parser.error("--interval cannot be combined with --min-interval or --max-interval")
+    return args
+
+
+def pool_policy(args):
+    if args.interval is not None:
+        return PoolPolicy(
+            min_interval_seconds=args.interval,
+            max_interval_seconds=args.interval,
+        )
+    return PoolPolicy(
+        min_interval_seconds=180.0 if args.min_interval is None else args.min_interval,
+        max_interval_seconds=300.0 if args.max_interval is None else args.max_interval,
+    )
+
+
+def main(argv=None):
+    args = parse_args(argv)
     root = args.root.resolve()
     store = WechatPoolStore(root / "data" / "wechat_pool.sqlite3")
     items = list(load_items(args.input.resolve())) if args.input else []
@@ -175,7 +210,7 @@ def main():
     runner = WechatPoolRunner(
         store,
         cli_processor(root, no_ocr=args.no_ocr, browser_channel=args.browser_channel),
-        PoolPolicy(min_interval_seconds=args.interval),
+        pool_policy(args),
         progress=progress,
     )
     report = {"enqueued": enqueued, "seeded": seeded,

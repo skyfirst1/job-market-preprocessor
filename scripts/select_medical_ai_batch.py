@@ -93,7 +93,12 @@ def looks_mojibake(value: str) -> bool:
     return False
 
 
-def select_rows(source: Path) -> list[dict[str, object]]:
+def select_rows(
+    source: Path,
+    industry_pattern: re.Pattern[str] = MEDICAL,
+    *,
+    industry_only: bool = False,
+) -> list[dict[str, object]]:
     selected: OrderedDict[str, dict[str, object]] = OrderedDict()
     with source.open("r", encoding="utf-8-sig", newline="") as handle:
         for source_row, row in enumerate(csv.DictReader(handle), start=2):
@@ -104,7 +109,7 @@ def select_rows(source: Path) -> list[dict[str, object]]:
             if (
                 not company
                 or SOE.search(nature)
-                or not MEDICAL.search(f"{industry} {company}")
+                or not industry_pattern.search(industry if industry_only else f"{industry} {company}")
                 or not TARGET_LOCATION.search(location)
             ):
                 continue
@@ -143,27 +148,39 @@ def select_rows(source: Path) -> list[dict[str, object]]:
     )
 
 
-def write_outputs(rows: list[dict[str, object]], output_dir: Path) -> None:
+def write_outputs(
+    rows: list[dict[str, object]],
+    output_dir: Path,
+    *,
+    screening_scope: str = "medical",
+) -> None:
     output_dir.mkdir(parents=True, exist_ok=True)
     columns = [
         "company", "enterprise_nature", "ownership_status", "industry", "best_priority", "discovery_status",
         "matched_roles", "announcement_url", "application_url", "acquisition_url", "source_pool",
         "source_row", "graduation_year", "location", "deadline",
     ]
+    flattened = []
+    for row in rows:
+        flat = dict(row)
+        flat["matched_roles"] = json.dumps(row["roles"], ensure_ascii=False)
+        flat.pop("roles")
+        flattened.append(flat)
     with (output_dir / "first_batch_candidates.csv").open("w", encoding="utf-8-sig", newline="") as handle:
         writer = csv.DictWriter(handle, fieldnames=columns)
         writer.writeheader()
-        for row in rows:
-            flat = dict(row)
-            flat["matched_roles"] = json.dumps(row["roles"], ensure_ascii=False)
-            flat.pop("roles")
-            writer.writerow(flat)
+        writer.writerows(flattened)
     for pool in ("web", "wechat"):
+        with (output_dir / f"{pool}_candidates.csv").open("w", encoding="utf-8-sig", newline="") as handle:
+            writer = csv.DictWriter(handle, fieldnames=columns)
+            writer.writeheader()
+            writer.writerows(row for row in flattened if row["source_pool"] == pool)
         with (output_dir / f"{pool}_queue.jsonl").open("w", encoding="utf-8", newline="\n") as handle:
             for row in rows:
                 if row["source_pool"] == pool and row["acquisition_url"]:
                     handle.write(json.dumps(row, ensure_ascii=False) + "\n")
     summary = {
+        "screening_scope": screening_scope,
         "companies": len(rows),
         "by_priority": {str(p): sum(row["best_priority"] == p for row in rows) for p in (1, 2, 3)},
         "awaiting_page_discovery": sum(row["best_priority"] is None for row in rows),
@@ -208,14 +225,27 @@ def audit_output(source: Path, candidate_path: Path, expected_count: int | None 
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="筛选非国企医疗/医药公司的 AI 岗位首批候选。")
+    parser = argparse.ArgumentParser(description="按行业筛选非国企 AI 岗位候选公司。")
     parser.add_argument("--input", type=Path, default=Path("job_market_raw.csv"))
     parser.add_argument("--output-dir", type=Path, default=Path("data/first_batch"))
     parser.add_argument("--limit", type=int, default=20, help="本批公司上限；0 表示导出全部候选。")
+    parser.add_argument("--screening-scope", default="medical", help="稳定的行业筛选标识。")
+    parser.add_argument("--industry-pattern", default=MEDICAL.pattern, help="行业筛选正则。")
+    parser.add_argument(
+        "--industry-only",
+        action="store_true",
+        help="只在行业分类中匹配；默认兼容旧医疗逻辑，也会参考公司名。",
+    )
     args = parser.parse_args()
-    rows = select_rows(args.input)
+    if not args.screening_scope.strip():
+        parser.error("--screening-scope must not be blank")
+    try:
+        industry_pattern = re.compile(args.industry_pattern, re.I)
+    except re.error as exc:
+        parser.error(f"invalid --industry-pattern: {exc}")
+    rows = select_rows(args.input, industry_pattern, industry_only=args.industry_only)
     selected = rows if args.limit == 0 else rows[: args.limit]
-    write_outputs(selected, args.output_dir)
+    write_outputs(selected, args.output_dir, screening_scope=args.screening_scope.strip())
     audit = audit_output(args.input, args.output_dir / "first_batch_candidates.csv",
                          expected_count=len(selected))
     sample_size = min(12, len(selected))

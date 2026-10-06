@@ -33,7 +33,7 @@ def run(value):
     return asyncio.run(value)
 
 
-def test_single_worker_starts_at_least_ten_seconds_apart(tmp_path):
+def test_single_worker_uses_injected_random_interval(tmp_path):
     store = WechatPoolStore(tmp_path / "pool.sqlite3")
     for url in urls(3):
         store.enqueue(url, now_value=999)
@@ -44,10 +44,23 @@ def test_single_worker_starts_at_least_ten_seconds_apart(tmp_path):
         starts.append(fake.clock())
         return {"status": "ok", "evidence_validated": True}
 
-    report = run(WechatPoolRunner(store, processor, clock=fake.clock, sleep=fake.sleep).run())
+    sampled = []
+
+    def choose_interval(minimum, maximum):
+        sampled.append((minimum, maximum))
+        return 240.0
+
+    report = run(WechatPoolRunner(
+        store,
+        processor,
+        clock=fake.clock,
+        sleep=fake.sleep,
+        random_uniform=choose_interval,
+    ).run())
     assert report["succeeded"] == 3
-    assert all(b - a >= 10.09 for a, b in zip(starts, starts[1:]))
-    assert fake.sleeps == pytest.approx([10.1, 10.1])
+    assert all(b - a >= 240.09 for a, b in zip(starts, starts[1:]))
+    assert fake.sleeps == pytest.approx([240.1, 240.1])
+    assert sampled == [(180.0, 300.0)] * 3
 
 
 def test_monotonic_deadline_rechecks_after_early_wakeup(tmp_path):
@@ -61,7 +74,13 @@ def test_monotonic_deadline_rechecks_after_early_wakeup(tmp_path):
         starts.append(fake.clock())
         return {"status": "ok", "evidence_validated": True}
 
-    report = run(WechatPoolRunner(store, processor, clock=fake.clock, sleep=fake.sleep).run())
+    report = run(WechatPoolRunner(
+        store,
+        processor,
+        policy=PoolPolicy(min_interval_seconds=10, max_interval_seconds=10),
+        clock=fake.clock,
+        sleep=fake.sleep,
+    ).run())
     assert report["succeeded"] == 2
     assert starts[1] - starts[0] >= 10.09
     assert len(fake.sleeps) >= 4
@@ -170,6 +189,8 @@ def test_policy_rejects_short_interval_or_changed_breaker():
         PoolPolicy(min_interval_seconds=9.99)
     with pytest.raises(ValueError, match="fixed at 10"):
         PoolPolicy(max_failures=11)
+    with pytest.raises(ValueError, match="at least the minimum"):
+        PoolPolicy(min_interval_seconds=300, max_interval_seconds=180)
 
 
 def test_default_batch_is_bounded_to_twenty(tmp_path):

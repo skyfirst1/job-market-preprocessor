@@ -8,8 +8,10 @@ from dataclasses import dataclass
 import hashlib
 import inspect
 import json
+import math
 import os
 from pathlib import Path
+import random
 import sqlite3
 import time
 from typing import Awaitable, Callable
@@ -248,13 +250,26 @@ class WechatPoolStore:
 
 @dataclass
 class PoolPolicy:
-    min_interval_seconds: float = 10.0
+    min_interval_seconds: float = 180.0
+    max_interval_seconds: float = 300.0
     max_failures: int = 10
     pacing_safety_seconds: float = PACING_SAFETY_SECONDS
 
     def __post_init__(self):
-        if self.min_interval_seconds < 10:
+        if (
+            isinstance(self.min_interval_seconds, bool)
+            or not isinstance(self.min_interval_seconds, (int, float))
+            or not math.isfinite(self.min_interval_seconds)
+            or self.min_interval_seconds < 10
+        ):
             raise ValueError("WeChat article start interval must be at least 10 seconds")
+        if (
+            isinstance(self.max_interval_seconds, bool)
+            or not isinstance(self.max_interval_seconds, (int, float))
+            or not math.isfinite(self.max_interval_seconds)
+            or self.max_interval_seconds < self.min_interval_seconds
+        ):
+            raise ValueError("WeChat maximum interval must be finite and at least the minimum")
         if self.max_failures != 10:
             raise ValueError("WeChat circuit breaker threshold is fixed at 10 failures")
         if self.pacing_safety_seconds < PACING_SAFETY_SECONDS:
@@ -271,6 +286,7 @@ class WechatPoolRunner:
         clock=None,
         monotonic_clock=None,
         sleep=asyncio.sleep,
+        random_uniform=random.uniform,
         progress=None,
     ):
         self.store = store
@@ -279,7 +295,14 @@ class WechatPoolRunner:
         self.clock = clock or time.time
         self.monotonic_clock = monotonic_clock or (time.monotonic if clock is None else self.clock)
         self.sleep = sleep
+        self.random_uniform = random_uniform
         self.progress = progress
+
+    def _next_interval(self) -> float:
+        return self.random_uniform(
+            self.policy.min_interval_seconds,
+            self.policy.max_interval_seconds,
+        ) + self.policy.pacing_safety_seconds
 
     async def _sleep_until(self, deadline: float) -> None:
         """Sleep to an absolute monotonic deadline, tolerating early wakeups."""
@@ -325,9 +348,7 @@ class WechatPoolRunner:
                 while processed < limit:
                     if not self.store.has_pending():
                         break
-                    effective_interval = (
-                        self.policy.min_interval_seconds + self.policy.pacing_safety_seconds
-                    )
+                    effective_interval = self._next_interval()
                     persisted_delay = self.store.delay_until_next_start(
                         self.clock(), effective_interval
                     )
@@ -336,11 +357,9 @@ class WechatPoolRunner:
                         self.monotonic_clock() + persisted_delay,
                     )
                     await self._sleep_until(next_start_deadline)
-                    started_monotonic = self.monotonic_clock()
                     active = self.store.claim(self.clock())
                     if active is None:
                         break
-                    next_start_deadline = started_monotonic + effective_interval
                     self.store.event(run_id, active["id"], "started", "single_worker", self.clock())
                     await self._report("article_started", run_id=run_id, article=active,
                                        processed=processed, succeeded=succeeded, failed=failed)

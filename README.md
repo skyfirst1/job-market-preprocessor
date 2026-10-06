@@ -127,6 +127,22 @@ HTML 导入只读取同目录树内的相对图片，不读取任意本机文件
 对应完整表的子集。即使同一公司或同一稳定岗位 ID 同时出现在两个行业，也能通过
 `screening_scope` 明确区分。
 
+制造业批次先按 CSV 行业分类生成独立候选，本轮仅处理普通网页；微信候选保存在
+`wechat_candidates.csv`，不进入本轮分析。微信池启用时默认在每篇之间随机等待
+180–300 秒。
+
+```powershell
+.\.venv\Scripts\python.exe scripts\select_medical_ai_batch.py `
+  --input job_market_raw.csv --output-dir data/manufacturing_candidates --limit 0 `
+  --screening-scope manufacturing --industry-pattern 制造业 --industry-only
+.\.venv\Scripts\python.exe scripts\run_manufacturing_web_batches.py --batch-size 20
+.\.venv\Scripts\python.exe scripts\update_application_targets.py `
+  --candidates data/manufacturing_candidates/web_candidates.csv `
+  --batch-summary data/manufacturing_candidates/batch_summary.json `
+  --output-dir exports/targets_manufacturing --screening-scope manufacturing `
+  --industry-pattern 制造业 --audit data/audits/manufacturing_incomplete_review.csv --force
+```
+
 - `data/workstation.sqlite3`：全部来源、去重 URL、持久任务队列和事件。
 - `data/artifacts/`：按 SHA256 保存原始 HTML、图片和脱敏 JSON。
 - `data/ocr/`：切片识别缓存及独立计数账本。
