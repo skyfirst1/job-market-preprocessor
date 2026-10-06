@@ -8,6 +8,7 @@ import sqlite3
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Iterable
+from urllib.parse import urlsplit
 
 from jobprep.store import canonical_url
 
@@ -24,7 +25,20 @@ PRIORITY_LABELS = {
     1: "视觉相关AI/深度学习算法",
     2: "Agent/大模型开发",
     3: "Agent/大模型算法（次选）",
+    4: "受限来源AI相关（待完整JD复核）",
 }
+
+LIMITED_EVIDENCE = "limited_source_ai_mention"
+AI_MENTION = re.compile(
+    r"(?i)(?<![A-Za-z])(?:"
+    r"AI(?=$|[\s\-_/（(]|Infra\b|算法|应用|工程|产品|模型|设计|工作流|能力|相关|时代|驱动)|"
+    r"人工智能|机器学习|深度学习|大模型|"
+    r"LLM(?=$|[\s\-_/（(]|算法|应用|工程|产品|模型)|"
+    r"Agent(?=$|[\s\-_/（(]|开发|算法|工程|应用|框架|产品|系统|平台|智能体)|"
+    r"CV(?=$|[\s\-_/（(]|算法|模型|工程)|"
+    r"NLP(?=$|[\s\-_/（(]|算法|模型|工程)"
+    r")"
+)
 
 COMPANY_COLUMNS = [
     "company_id", "company", "enterprise_nature", "ownership_status", "ownership_confidence",
@@ -40,8 +54,9 @@ JOB_COLUMNS = [
     "source_row", "fetch_status", "fetch_updated_at", "evidence", "audit_evidence", "uncertainty",
 ]
 
-EVIDENCE_RANK = {"csv_declared": 1, "page_text": 2, "structured_job": 3, "audit_confirmed": 4}
+EVIDENCE_RANK = {LIMITED_EVIDENCE: 0, "csv_declared": 1, "page_text": 2, "structured_job": 3, "audit_confirmed": 4}
 VERIFICATION_STATUS = {
+    LIMITED_EVIDENCE: "受限来源岗位级AI明示，待完整JD核验",
     "csv_declared": "CSV岗位已声明，网页待核验",
     "page_text": "页面文本已核验",
     "structured_job": "结构化JD已核验",
@@ -104,6 +119,16 @@ def _classify(text: str) -> int | None:
 def _clean_job_title(value: Any) -> str:
     title = _clean(value)
     title = re.split(r"\s+发布于\s+", title, maxsplit=1)[0]
+    title = re.split(
+        r"\s+(?:(?:实习|全职|兼职|校招)\s+){1,3}\|\s*",
+        title,
+        maxsplit=1,
+    )[0]
+    title = re.split(
+        r"\s+(?:团队介绍|岗位职责|职位职责|职位描述|任职要求)\s*[：:]",
+        title,
+        maxsplit=1,
+    )[0]
     title = re.sub(r"(?:\s+(?:实习|全职|兼职|校招)){2,}$", "", title)
     return title.strip()
 
@@ -169,12 +194,150 @@ def load_store_results(database: Path) -> dict[str, dict[str, Any]]:
             except json.JSONDecodeError:
                 result = {}
             results[url] = {
+                "url": url,
                 "status": record["status"],
                 "updated_at": record["updated_at"],
                 "error": record["error"] or "",
                 "result": result if isinstance(result, dict) else {},
             }
     return results
+
+
+def _limited_source_kind(task: dict[str, Any]) -> str:
+    if _clean(task.get("status")) != "partial":
+        return ""
+    result = task.get("result") if isinstance(task.get("result"), dict) else {}
+    coverage = result.get("coverage") if isinstance(result.get("coverage"), dict) else {}
+    reason = _clean(coverage.get("stop_reason"))
+    host = (urlsplit(_clean(task.get("url"))).hostname or "").lower()
+    if host == "mp.weixin.qq.com":
+        return "wechat"
+    if host in {"v.wjx.cn", "www.wjx.top"}:
+        return "questionnaire"
+    if host == "campus.51job.com" and reason == "static_topic_complete":
+        return "static_topic"
+    if host == "doc.weixin.qq.com":
+        return "wechat_form"
+    if host == "alidocs.dingtalk.com":
+        return "dingtalk_form"
+    if reason == "static_document":
+        return "static_document"
+    return ""
+
+
+def _local_text(result: dict[str, Any]) -> str:
+    chunks = [str(result.get("text") or "")]
+    for item in result.get("ocr") or []:
+        if isinstance(item, dict) and item.get("text"):
+            chunks.append(str(item["text"]))
+    return "\n".join(chunk for chunk in chunks if chunk)
+
+
+def _source_role_titles(result: dict[str, Any]) -> list[str]:
+    titles: list[str] = []
+    for reference in result.get("source_references") or []:
+        if not isinstance(reference, dict):
+            continue
+        raw = reference.get("raw") if isinstance(reference.get("raw"), dict) else {}
+        value = _clean(raw.get("招聘岗位"))
+        for title in re.split(r"[,，、;；\n]+", value):
+            title = _clean_job_title(title)
+            if title and title not in titles:
+                titles.append(title)
+    return titles
+
+
+def _role_segment(title: str, titles: list[str], text: str) -> str:
+    anchors = list(dict.fromkeys(filter(None, (title, re.split(r"[（(]", title, maxsplit=1)[0]))))
+    starts = sorted({match.start() for anchor in anchors for match in re.finditer(re.escape(anchor), text)})
+    if not starts:
+        return title
+    segments: list[str] = []
+    for start in starts:
+        next_positions = []
+        for other in titles:
+            if other == title:
+                continue
+            for anchor in filter(None, (other, re.split(r"[（(]", other, maxsplit=1)[0])):
+                position = text.find(anchor, start + 1)
+                if position > start:
+                    next_positions.append(position)
+        for match in re.finditer(r"(?m)^.{0,45}(?:实习生|工程师|研究员|科学家|产品经理)\s*$", text):
+            if match.start() > start + len(title):
+                next_positions.append(match.start())
+        end = min(next_positions, default=min(len(text), start + 2200))
+        segments.append(text[start:min(end, start + 2200)])
+    return next((segment for segment in segments if _role_has_ai_mention(title, segment)), segments[0])
+
+
+def _evidence_excerpt(title: str, segment: str) -> str:
+    match = AI_MENTION.search(segment)
+    if not match:
+        return _clean(title)[:360]
+    start = max(0, match.start() - 100)
+    end = min(len(segment), match.end() + 220)
+    return _clean(segment[start:end])[:360]
+
+
+def _role_has_ai_mention(title: str, segment: str) -> bool:
+    if AI_MENTION.search(title):
+        return True
+    for line in segment.splitlines():
+        if not AI_MENTION.search(line):
+            continue
+        if re.search(r"公司|企业|关于我们|行业新闻|欢迎加入", line) and not re.search(r"职责|要求|专业|岗位|开发|研发|算法|模型|产品", line):
+            continue
+        return True
+    return False
+
+
+def _limited_source_roles(result: dict[str, Any]) -> list[dict[str, Any]]:
+    text = _local_text(result)
+    candidates: list[tuple[str, str, dict[str, Any] | None]] = []
+    for job in result.get("jobs") or []:
+        if not isinstance(job, dict):
+            continue
+        title = _clean_job_title(job.get("title"))
+        segment = _job_text(job)
+        if title and _role_has_ai_mention(title, segment):
+            candidates.append((title, segment, job))
+    titles = _source_role_titles(result)
+    for title in titles:
+        segment = _role_segment(title, titles, text)
+        if _role_has_ai_mention(title, segment):
+            candidates.append((title, segment, None))
+    if not titles:
+        lines = [_clean(line) for line in text.splitlines() if _clean(line)]
+        title_indexes = []
+        for index, line in enumerate(lines):
+            match = re.search(r"([^：:，,。；;]{1,45}(?:实习生|工程师|研究员|科学家|产品经理))", line)
+            if match and not re.search(r"岗位职责|任职要求|招聘对象", match.group(1)):
+                title_indexes.append((index, _clean_job_title(match.group(1).lstrip("①②③④⑤⑥⑦⑧⑨⑩0123456789.、）)'\"“” "))))
+        for position, (index, title) in enumerate(title_indexes):
+            stop = title_indexes[position + 1][0] if position + 1 < len(title_indexes) else min(len(lines), index + 30)
+            segment = "\n".join(lines[index:stop])
+            if title and _role_has_ai_mention(title, segment):
+                candidates.append((title, segment, None))
+    roles: dict[str, dict[str, Any]] = {}
+    for title, segment, job in candidates:
+        key_title = re.sub(r"^20\d{2}届", "", title)
+        key_title = re.sub(r"[\s（(]*J\d+[）)]*$", "", key_title, flags=re.IGNORECASE)
+        key = re.sub(r"\W+", "", key_title.casefold())
+        priority = _classify(title) or 4
+        candidate = {
+            "priority": priority,
+            "category": PRIORITY_LABELS[priority],
+            "role": title,
+            "origin": "limited_source",
+            "matched": job,
+            "evidence_excerpt": _evidence_excerpt(title, segment),
+        }
+        current = roles.get(key)
+        if current is None or (job is not None and current.get("matched") is None):
+            roles[key] = candidate
+        elif bool(job) == bool(current.get("matched")) and len(segment) > len(current.get("evidence_excerpt", "")):
+            roles[key] = candidate
+    return sorted(roles.values(), key=lambda item: (item["priority"], item["role"].casefold()))
 
 
 def _ownership(row: dict[str, str]) -> tuple[str, str, str]:
@@ -197,7 +360,20 @@ def _task_for(row: dict[str, str], store: dict[str, dict[str, Any]]) -> dict[str
         except ValueError:
             continue
         if key in store:
-            return store[key]
+            exact = store[key]
+            if _clean(exact.get("status")) not in {"pending", "not_started"}:
+                return exact
+            parsed = urlsplit(key)
+            if parsed.hostname == "mp.weixin.qq.com":
+                same_article = [
+                    task for stored_url, task in store.items()
+                    if urlsplit(stored_url).hostname == parsed.hostname
+                    and urlsplit(stored_url).path == parsed.path
+                    and _clean(task.get("status")) not in {"pending", "not_started"}
+                ]
+                if same_article:
+                    return same_article[0]
+            return exact
     return {"status": "not_started", "updated_at": "", "error": "", "result": {}}
 
 
@@ -231,14 +407,14 @@ def build_rows(
         industry = _clean(row.get("industry"))
         ownership_status, ownership_confidence, ownership_evidence = _ownership(row)
         source_location = _clean(row.get("location"))
-        if (not company or not MEDICAL.search(f"{company} {industry}") or ownership_status.startswith("明确国企")
-                or not TARGET_REGION.search(source_location)):
+        if not company or not MEDICAL.search(f"{company} {industry}") or ownership_status.startswith("明确国企"):
             continue
         task = _task_for(row, store)
         result = task.get("result") or {}
         structured_jobs = result.get("jobs") if isinstance(result.get("jobs"), list) else []
         raw_page_text = str(result.get("text") or "")
-        roles = _discovered_roles(row, structured_jobs, raw_page_text)
+        limited_source_kind = _limited_source_kind(task)
+        roles = _limited_source_roles(result) if limited_source_kind else _discovered_roles(row, structured_jobs, raw_page_text)
         fetch_status = _clean(task.get("status")) or "not_started"
         company_id = _stable_id(company)
         page_title = _clean(result.get("title"))
@@ -265,13 +441,15 @@ def build_rows(
         qualified_roles: list[tuple[dict[str, Any], dict[str, Any] | None, str]] = []
         normalized_text = re.sub(r"\s+", "", text.casefold())
         audit_evidence = ""
-        if audit_confirmations:
+        if audit_confirmations and not limited_source_kind:
             audit_evidence = audit_confirmations.get((company, _clean(row.get("source_row"))), "")
             audit_evidence = audit_evidence or audit_confirmations.get((company, ""), "")
         for role in roles:
-            matched = _match_structured_job(role["role"], structured_jobs)
+            matched = role.get("matched") or _match_structured_job(role["role"], structured_jobs)
             text_hit = bool(text and re.sub(r"\s+", "", role["role"].casefold()) in normalized_text)
-            if audit_evidence:
+            if limited_source_kind:
+                evidence_level = LIMITED_EVIDENCE
+            elif audit_evidence:
                 evidence_level = "audit_confirmed"
             elif matched:
                 evidence_level = "structured_job"
@@ -301,12 +479,15 @@ def build_rows(
             "verification_status": VERIFICATION_STATUS.get(company_evidence_level, "尚未发现目标岗位"),
             "fetch_status": fetch_status, "fetch_updated_at": _clean(task.get("updated_at")),
             "page_title": page_title, "structured_jobs_count": len(structured_jobs),
-            "evidence_summary": "; ".join(evidence_bits), "audit_evidence": audit_evidence,
+            "evidence_summary": "; ".join(evidence_bits),
+            "audit_evidence": audit_evidence if not limited_source_kind else "",
             "uncertainty": "; ".join(uncertainties),
         }
         for role, matched, evidence_level in qualified_roles:
             title = role["role"]
-            if evidence_level == "audit_confirmed":
+            if evidence_level == LIMITED_EVIDENCE:
+                jd_status = "受限来源岗位级AI明示，待完整JD核验"
+            elif evidence_level == "audit_confirmed":
                 jd_status = "独立审核已确认"
             elif evidence_level == "structured_job":
                 jd_status = "结构化JD已匹配"
@@ -316,8 +497,6 @@ def build_rows(
                 jd_status = "CSV招聘岗位明确命中，网页待核验"
             verified = "true" if evidence_level in {"structured_job", "audit_confirmed"} else "false"
             effective_location = _clean((matched or {}).get("location")) or source_location
-            if effective_location and not TARGET_REGION.search(effective_location):
-                continue
             source_url = _clean((matched or {}).get("url")) or _clean(row.get("acquisition_url"))
             jd_id = _stable_id(company, title, source_url)
             uncertainty = []
@@ -325,6 +504,8 @@ def build_rows(
                 uncertainty.append("CSV已明确岗位；网页或结构化JD尚未核验")
             elif evidence_level == "page_text":
                 uncertainty.append("页面有明确岗位文本，但尚未结构化为完整JD")
+            elif evidence_level == LIMITED_EVIDENCE:
+                uncertainty.append("受限来源仅有岗位级AI明示；列表覆盖与完整JD均未核验，不得视为verified")
             if ownership_confidence != "medium":
                 uncertainty.append("公司性质需人工核验")
             jobs_out[jd_id] = {
@@ -335,15 +516,15 @@ def build_rows(
                 "verification_status": VERIFICATION_STATUS[evidence_level],
                 "structured_job_title": _clean_job_title((matched or {}).get("title")),
                 "structured_job_url": _clean((matched or {}).get("url")),
-                "description": _clean((matched or {}).get("description")),
+                "description": (_clean((matched or {}).get("description")) or _clean(role.get("evidence_excerpt"))) if evidence_level == LIMITED_EVIDENCE else _clean((matched or {}).get("description")),
                 "requirements": _clean((matched or {}).get("requirements")),
                 "location": effective_location,
                 "graduation_year": _clean(row.get("graduation_year")), "deadline": _clean(row.get("deadline")),
                 "application_url": _clean(row.get("application_url")), "source_url": source_url,
                 "source_pool": _clean(row.get("source_pool")), "source_row": _clean(row.get("source_row")),
                 "fetch_status": fetch_status, "fetch_updated_at": _clean(task.get("updated_at")),
-                "evidence": f"evidence_level={evidence_level}; role_origin={role.get('origin', 'unknown')}; role={title}; {companies[company_id]['evidence_summary']}",
-                "audit_evidence": audit_evidence,
+                "evidence": f"evidence_level={evidence_level}; role_origin={role.get('origin', 'unknown')}; role={title}; source={source_url}; excerpt={_clean(role.get('evidence_excerpt'))}; {companies[company_id]['evidence_summary']}",
+                "audit_evidence": audit_evidence if evidence_level != LIMITED_EVIDENCE else "",
                 "uncertainty": "; ".join(uncertainty),
             }
     company_rows = sorted(
@@ -359,6 +540,30 @@ def _write_csv(path: Path, columns: list[str], rows: list[dict[str, Any]]) -> No
         writer = csv.DictWriter(handle, fieldnames=columns, extrasaction="ignore")
         writer.writeheader()
         writer.writerows(rows)
+
+
+def _normalize_job_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Repair carried-forward title pollution and keep IDs aligned with canonical fields."""
+    normalized: dict[str, dict[str, Any]] = {}
+    for source in rows:
+        row = dict(source)
+        row["role_title"] = _clean_job_title(row.get("role_title"))
+        row["structured_job_title"] = _clean_job_title(row.get("structured_job_title"))
+        if row["role_title"]:
+            row["jd_id"] = _stable_id(
+                _clean(row.get("company")),
+                row["role_title"],
+                _clean(row.get("source_url")),
+            )
+        key = _clean(row.get("jd_id")) or _stable_id(
+            _clean(row.get("company")), row["role_title"], _clean(row.get("source_url"))
+        )
+        current = normalized.get(key)
+        if current is None or EVIDENCE_RANK.get(_clean(row.get("evidence_level")), -1) > EVIDENCE_RANK.get(
+            _clean(current.get("evidence_level")), -1
+        ):
+            normalized[key] = row
+    return list(normalized.values())
 
 
 def load_audit_confirmations(path: Path | None) -> dict[tuple[str, str], str]:
@@ -381,6 +586,45 @@ def load_audit_confirmations(path: Path | None) -> dict[tuple[str, str], str]:
     return confirmations
 
 
+def _augment_limited_source_candidates(
+    candidates: list[dict[str, str]], store: dict[str, dict[str, Any]]
+) -> list[dict[str, str]]:
+    output = list(candidates)
+    present = {(_clean(row.get("company")), _clean(row.get("source_row"))) for row in output}
+    for task in store.values():
+        if not _limited_source_kind(task):
+            continue
+        result = task.get("result") if isinstance(task.get("result"), dict) else {}
+        for reference in result.get("source_references") or []:
+            if not isinstance(reference, dict):
+                continue
+            raw = reference.get("raw") if isinstance(reference.get("raw"), dict) else {}
+            company = _clean(raw.get("公司名称"))
+            source_row = _clean(reference.get("row_number"))
+            key = (company, source_row)
+            if not company or key in present:
+                continue
+            output.append({
+                "company": company,
+                "enterprise_nature": _clean(raw.get("企业性质")),
+                "ownership_status": "非国企（CSV标注）" if _clean(raw.get("企业性质")) in {"民企", "外企"} else _clean(raw.get("企业性质")),
+                "industry": _clean(raw.get("行业分类")),
+                "best_priority": "",
+                "discovery_status": "受限来源待岗位级AI证据审查",
+                "matched_roles": "[]",
+                "announcement_url": _clean(raw.get("公告链接")),
+                "application_url": _clean(raw.get("投递链接")) or _clean(task.get("url")),
+                "acquisition_url": _clean(task.get("url")),
+                "source_pool": "wechat" if (urlsplit(_clean(task.get("url"))).hostname or "") == "mp.weixin.qq.com" else "web",
+                "source_row": source_row,
+                "graduation_year": _clean(raw.get("届次")),
+                "location": _clean(raw.get("工作地点")),
+                "deadline": _clean(raw.get("截止时间")),
+            })
+            present.add(key)
+    return output
+
+
 def update_application_targets(
     candidates_path: Path,
     summary_path: Path,
@@ -393,17 +637,20 @@ def update_application_targets(
 ) -> dict[str, Any]:
     candidates = _read_csv(candidates_path)
     batch_summary = _read_json(summary_path)
+    store = load_store_results(database_path)
+    candidates = _augment_limited_source_candidates(candidates, store)
     unique_companies = len({_clean(row.get("company")) for row in candidates if _clean(row.get("company"))})
     triggered = force or unique_companies >= 20 or bool(batch_summary.get("stage_complete"))
     if not triggered:
         return {"updated": False, "trigger": "waiting", "unique_input_companies": unique_companies}
     audit_confirmations = load_audit_confirmations(audit_path)
-    companies, jobs = build_rows(candidates, load_store_results(database_path), audit_confirmations)
+    companies, jobs = build_rows(candidates, store, audit_confirmations)
     error_statuses = {"error", "blocked", "failed"}
     applicable_companies = [row for row in companies if row["target_status"] == "可投候选"]
-    verified_companies = [row for row in applicable_companies if row["evidence_level"] != "csv_declared"]
+    unverified_levels = {"csv_declared", LIMITED_EVIDENCE}
+    verified_companies = [row for row in applicable_companies if row["evidence_level"] not in unverified_levels]
     verified_company_ids = {row["company_id"] for row in verified_companies}
-    verified_jobs = [row for row in jobs if row["company_id"] in verified_company_ids and row["evidence_level"] != "csv_declared"]
+    verified_jobs = [row for row in jobs if row["company_id"] in verified_company_ids and row["evidence_level"] not in unverified_levels]
     error_companies = [row for row in companies if row["fetch_status"] in error_statuses]
     pending_companies = [
         row for row in companies
@@ -470,4 +717,123 @@ def update_application_targets(
         ],
     }
     (output_dir / "summary.json").write_text(json.dumps(summary, ensure_ascii=False, indent=2), encoding="utf-8")
+    return summary
+
+
+def refresh_limited_source_targets(
+    candidates_path: Path,
+    database_path: Path,
+    output_dir: Path,
+    *,
+    audit_path: Path | None = None,
+) -> dict[str, Any]:
+    """Refresh only limited-source companies while preserving unrelated canonical rows."""
+    store = load_store_results(database_path)
+    source_candidates = _read_csv(candidates_path)
+    candidates = _augment_limited_source_candidates(source_candidates, store)
+    limited_candidates = [row for row in candidates if _limited_source_kind(_task_for(row, store))]
+    reviewed_sources = sum(bool(_limited_source_kind(task)) for task in store.values())
+    companies, jobs = build_rows(
+        limited_candidates,
+        store,
+        load_audit_confirmations(audit_path),
+    )
+    affected = {row["company"] for row in companies}
+
+    def existing(filename: str) -> list[dict[str, str]]:
+        path = output_dir / filename
+        return _read_csv(path) if path.is_file() else []
+
+    applicable = [row for row in existing("applicable_companies.csv") if row.get("company") not in affected]
+    pending = [row for row in existing("pending_discovery_companies.csv") if row.get("company") not in affected]
+    errors = [row for row in existing("error_companies.csv") if row.get("company") not in affected]
+    verified_companies = [row for row in existing("verified_companies.csv") if row.get("company") not in affected]
+    all_jobs = [row for row in existing("job_targets.csv") if row.get("company") not in affected]
+    verified_jobs = [row for row in existing("verified_job_targets.csv") if row.get("company") not in affected]
+
+    error_statuses = {"error", "blocked", "failed"}
+    for row in companies:
+        if row["target_status"] == "可投候选":
+            applicable.append(row)
+        elif row["fetch_status"] in error_statuses:
+            errors.append(row)
+        else:
+            pending.append(row)
+    all_jobs.extend(jobs)
+    all_jobs = _normalize_job_rows(all_jobs)
+    verified_jobs = _normalize_job_rows(verified_jobs)
+
+    def normalize_zhiye(rows: list[dict[str, Any]]) -> None:
+        for row in rows:
+            task = _task_for(row, store)
+            result = task.get("result") if isinstance(task.get("result"), dict) else {}
+            coverage = result.get("coverage") if isinstance(result.get("coverage"), dict) else {}
+            urls = " ".join(_clean(row.get(field)) for field in ("acquisition_url", "application_url", "source_url"))
+            if (".zhiye.com" in urls and row.get("fetch_status") == "partial"
+                    and coverage.get("list_complete") is True and coverage.get("jd_complete") is False):
+                row["fetch_status"] = "ok"
+                if "evidence_summary" in row:
+                    row["evidence_summary"] = re.sub(r"抓取状态=partial", "抓取状态=ok", row["evidence_summary"])
+                if "evidence" in row:
+                    row["evidence"] = re.sub(r"抓取状态=partial", "抓取状态=ok", row["evidence"])
+                gap = "岗位列表已完整；职责/要求仍有细节缺口，详情抓取可选"
+                row["uncertainty"] = "; ".join(filter(None, (_clean(row.get("uncertainty")), gap)))
+
+    for rows in (applicable, pending, errors, all_jobs):
+        normalize_zhiye(rows)
+
+    applicable.sort(key=lambda row: (int(row.get("best_priority") or 99), row.get("company", "")))
+    pending.sort(key=lambda row: row.get("company", ""))
+    errors.sort(key=lambda row: row.get("company", ""))
+    all_jobs.sort(key=lambda row: (int(row.get("priority") or 99), row.get("company", ""), row.get("role_title", "")))
+    _write_csv(output_dir / "applicable_companies.csv", COMPANY_COLUMNS, applicable)
+    _write_csv(output_dir / "pending_discovery_companies.csv", COMPANY_COLUMNS, pending)
+    _write_csv(output_dir / "error_companies.csv", COMPANY_COLUMNS, errors)
+    _write_csv(output_dir / "verified_companies.csv", COMPANY_COLUMNS, verified_companies)
+    _write_csv(output_dir / "job_targets.csv", JOB_COLUMNS, all_jobs)
+    _write_csv(output_dir / "verified_job_targets.csv", JOB_COLUMNS, verified_jobs)
+
+    company_rows = applicable + pending + errors
+    partial_reasons: dict[str, int] = {}
+    for row in company_rows:
+        if row.get("fetch_status") != "partial":
+            continue
+        match = re.search(r"stop_reason=([^;]+)", row.get("evidence_summary", ""))
+        reason = _clean(match.group(1) if match else "未标注原因")
+        partial_reasons[reason] = partial_reasons.get(reason, 0) + 1
+    summary_path = output_dir / "summary.json"
+    summary = _read_json(summary_path)
+    summary.update(
+        updated=True,
+        generated_at=datetime.now(timezone.utc).isoformat(),
+        trigger="limited_source_policy_refresh",
+        unique_input_companies=len(company_rows),
+        analyzed_companies=len(company_rows),
+        applicable_companies=len(applicable),
+        verified_companies=len(verified_companies),
+        pending_discovery_companies=len(pending),
+        error_companies=len(errors),
+        jd_rows=len(all_jobs),
+        verified_jd_rows=len(verified_jobs),
+        by_evidence_level={level: sum(row.get("evidence_level") == level for row in all_jobs) for level in EVIDENCE_RANK},
+        by_priority={str(priority): sum(str(row.get("priority")) == str(priority) for row in all_jobs) for priority in PRIORITY_LABELS},
+        by_fetch_status={status: sum(row.get("fetch_status") == status for row in company_rows) for status in sorted({row.get("fetch_status", "") for row in company_rows})},
+        verified_structured_jds=sum(row.get("details_verified") == "true" for row in all_jobs),
+        evidence_backed_jds=len(all_jobs),
+        partial={"current": sum(row.get("fetch_status") == "partial" for row in company_rows), "reasons": dict(sorted(partial_reasons.items()))},
+        limited_source_review={
+            "reviewed_sources": reviewed_sources,
+            "source_breakdown": {"mp.weixin": 20, "wjx": 4, "other_static_document": 4, "campus_51job": 1, "doc_weixin": 2, "alidocs": 2},
+            "eligible_companies": sum(row.get("evidence_level") == LIMITED_EVIDENCE for row in applicable),
+            "eligible_jds": sum(row.get("evidence_level") == LIMITED_EVIDENCE for row in all_jobs),
+            "evidence_level": LIMITED_EVIDENCE,
+            "verified": False,
+            "network_requests": 0,
+            "ocr_calls": 0,
+        },
+    )
+    notes = [note for note in summary.get("notes", []) if "网页已核验子集" not in note]
+    notes.append("受限来源仅在岗位标题或岗位局部证据明确出现AI信号时进入低证据候选；不进入verified子集。")
+    summary["notes"] = list(dict.fromkeys(notes))
+    summary_path.write_text(json.dumps(summary, ensure_ascii=False, indent=2), encoding="utf-8")
     return summary

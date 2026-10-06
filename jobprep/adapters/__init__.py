@@ -9,6 +9,7 @@ import re
 from .validation import configured_list, http_url
 from .job51_static import Job51StaticPortal
 from .job51_xyz import Job51XYZPublicPortal
+from .pool import accept_complete_list, accept_stable_mokahr_snapshots
 
 
 STATUSES = {"ok", "partial", "error", "blocked", "deleted"}
@@ -29,7 +30,7 @@ def _list_url(url):
 
 def _landing(url):
     parts = http_url(url)
-    return parts.path in {"", "/"} and parts.fragment in {"", "/"}
+    return parts.path.rstrip("/").lower() in {"", "/campus"} and parts.fragment in {"", "/"}
 
 
 def _single_job_identity(url):
@@ -469,6 +470,9 @@ class MokahrPublicPortal(BaseAdapter):
         result["coverage"]["list_url"] = target
         context.provenance.append({"rule": "mokahr_jobs_route", "url": target,
                                    "pagination": "public jobs/v2 API via UI next control"})
+        result = accept_complete_list(result, allowed={"terminal_pagination"})
+        if result.get("status") != "ok":
+            result = accept_stable_mokahr_snapshots(result, context.url)
         return result
 
 
@@ -559,11 +563,10 @@ class HotjobPublicPortal(BaseAdapter):
         detail_urls = [job["url"] for job in result.get("jobs") or [] if job.get("url")]
         result["coverage"].update(detail_urls=detail_urls, jd_complete=False,
                                   complete=False, list_url=page_url)
-        if result["status"] == "ok":
-            result["status"] = "partial"
         context.provenance.append({"rule": "hotjob_public_position_api", "url": endpoint,
                                    "suite": suite, "recruit_type": recruit_type})
-        return result
+        return accept_complete_list(result, allowed={"last_page", "reported_last_page",
+                                                     "reported_total_reached"})
 
 
 class ConfiguredPublicList(BaseAdapter):
@@ -588,7 +591,7 @@ class ConfiguredPublicList(BaseAdapter):
 class FeishuPublicPortal(BaseAdapter):
     name = "FeishuPublicPortal"
     priority = 50
-    scope = "jobs.feishu.cn and subdomains: observed position/list route, or root landing discovery"
+    scope = "jobs.feishu.cn and subdomains: observed position/list route, root or /Campus landing discovery"
     parameters = {"max_pages": {"type": "integer", "default": 100},
                   "timeout": {"type": "number", "unit": "seconds", "default": 25},
                   "interval": {"type": "number", "unit": "seconds", "default": 1.2},

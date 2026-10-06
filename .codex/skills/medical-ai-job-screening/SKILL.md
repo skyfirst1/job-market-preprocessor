@@ -40,3 +40,31 @@ When excluding a role for this distinction, record `image_processing_without_ai_
 - Keep borderline image-processing roles in an adjacent or review list instead of the strict target list.
 - Leave the established Agent/LLM and location rules unchanged unless the user updates them.
 
+## Limited-Source AI Mention Rule
+
+Use a separate low-evidence admission path only for sources whose job coverage cannot be
+proved complete, including WeChat articles, questionnaires, application forms, and static
+documents without a reliable pagination or terminal condition.
+
+For these limited sources, admit a role to the candidate list when either the role title or
+the role's own local text explicitly mentions an AI signal such as `AI`, `人工智能`,
+`机器学习`, `深度学习`, `大模型`, `LLM`, `Agent`, `CV`, or `NLP`.
+
+This exception does not apply to ordinary complete sources, which must continue to satisfy
+the three strict target-category rules above. Apply these safeguards:
+
+- The AI mention must be bound to an identifiable role title or that role's adjacent duties,
+  requirements, or qualifications. Company introductions, product descriptions, industry
+  labels, news headlines, and unrelated roles do not qualify.
+- Never invent a role from a company-level AI statement. If no identifiable role exists,
+  keep the company pending.
+- Record `evidence_level=limited_source_ai_mention`, the source URL, a concise verbatim
+  evidence excerpt, and the unresolved coverage or detail uncertainty.
+- Set `details_verified=false`; do not include these rows in verified company or verified JD
+  outputs, even when an older audit labeled the page sufficient for semantic review.
+- Keep strict duplicates out of the low-evidence set. If the same company and normalized role
+  already has stronger, complete-source evidence, retain the stronger row only.
+- A list that is demonstrably complete is not fetch-partial merely because some duties or
+  requirements are absent. Record list acquisition as successful, preserve
+  `list_complete=true` and `jd_complete=false`, and keep any detail fetch as optional.
+

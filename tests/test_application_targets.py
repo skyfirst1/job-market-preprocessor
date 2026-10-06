@@ -45,10 +45,30 @@ def test_blank_priority_company_is_retained_for_page_discovery():
     assert jobs == []
 
 
-def test_non_target_region_is_excluded():
+def test_latest_nationwide_scope_keeps_other_city():
     companies, jobs = build_rows([candidate(location="深圳")], {})
-    assert companies == []
-    assert jobs == []
+    assert len(companies) == 1
+    assert len(jobs) == 2
+
+
+def test_limited_source_ai_role_is_unverified_and_company_copy_does_not_qualify():
+    url = "https://mp.weixin.qq.com/s/example"
+    row = candidate(best_priority="", matched_roles="[]", acquisition_url=url,
+                    application_url=url)
+    store = {url: {
+        "url": url, "status": "partial", "updated_at": "2026-10-06T00:00:00+00:00",
+        "error": "", "result": {
+            "title": "校园招聘", "text": "公司以人工智能驱动创新",
+            "ocr": [{"text": "校招岗位\nAI工程师\n负责业务系统研发\n销售实习生\n欢迎加入人工智能企业"}],
+            "jobs": [], "coverage": {"stop_reason": "article_acquired_jd_coverage_unverified"},
+        },
+    }}
+    companies, jobs = build_rows([row], store, {("甲医疗", "42"): "old audit"})
+    assert companies[0]["evidence_level"] == "limited_source_ai_mention"
+    assert [item["role_title"] for item in jobs] == ["AI工程师"]
+    assert jobs[0]["details_verified"] == "false"
+    assert jobs[0]["audit_evidence"] == ""
+    assert "excerpt=" in jobs[0]["evidence"]
 
 
 def test_structured_job_can_discover_role_after_blank_csv_signal():
@@ -88,6 +108,24 @@ def test_structured_title_removes_rendered_ui_suffix():
     _, jobs = build_rows([row], store)
     assert jobs[0]["role_title"] == "AI Agent研发工程师"
     assert jobs[0]["priority"] == 2
+
+
+def test_structured_title_removes_employment_metadata_and_jd_text():
+    row = candidate(matched_roles=json.dumps([{
+        "priority": 1,
+        "category": "视觉相关AI/深度学习算法",
+        "role": "人工智能应用研究员（AIDD方向）",
+    }], ensure_ascii=False))
+    store = {"https://example.com/jobs": {
+        "status": "ok", "updated_at": "2026-10-06T00:00:00+00:00", "error": "",
+        "result": {"title": "招聘", "text": "", "coverage": {}, "jobs": [{
+            "title": "人工智能应用研究员（AIDD方向） 全职 全职 | 上海 团队介绍：负责药物研发",
+            "location": "上海",
+        }]},
+    }}
+    _, jobs = build_rows([row], store)
+    assert jobs[0]["role_title"] == "人工智能应用研究员（AIDD方向）"
+    assert jobs[0]["structured_job_title"] == "人工智能应用研究员（AIDD方向）"
 
 
 def test_company_wide_category_blob_is_not_emitted_as_one_jd():

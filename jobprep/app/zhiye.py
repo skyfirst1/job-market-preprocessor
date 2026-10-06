@@ -57,17 +57,24 @@ def finalize_public_list(
         list_complete=list_complete,
         jd_complete=jd_complete,
         complete=list_complete and jd_complete,
+        details_optional=bool(list_complete and not jd_complete),
     )
     if not list_complete:
         coverage["stop_reason"] = "reported_total_mismatch"
     elif not jd_complete:
-        coverage["stop_reason"] = "zhiye_details_required"
+        coverage.update(
+            stop_reason="zhiye_public_api_list_complete_details_optional",
+            completion_basis="reported_total_reached; JD detail fields remain optional",
+            detail_gap="duties_or_requirements_incomplete",
+        )
     else:
         coverage.update(
             stop_reason="zhiye_public_api_complete",
             completion_basis="reported_total_and_structured_duty_require_fields",
         )
-    result["status"] = "ok" if coverage["complete"] else "partial"
+    # Fetch status describes list acquisition. Missing optional JD fields remain visible in
+    # coverage without turning a demonstrably complete job list into a partial fetch.
+    result["status"] = "ok" if list_complete else "partial"
     return result
 
 

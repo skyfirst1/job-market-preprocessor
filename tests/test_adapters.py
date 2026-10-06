@@ -202,7 +202,12 @@ def test_mokahr_detail_is_not_rewritten_to_jobs_list():
 def test_hotjob_builds_bounded_public_list_config():
     url = "https://wecruit.hotjob.cn/SU61458d83bef57c54dcb4e43f/pb/school.html#/"
     raw = doc(url, jobs=[{"id": "abc", "title": "AI", "needs_details": True}],
-              coverage={"complete": False, "list_complete": True})
+              json_paths=["page-1.json"], evidence=[{"raw_ref": "page-1.json"}],
+              coverage={"complete": False, "list_complete": True,
+                        "stop_reason": "last_page", "expected_total": 1,
+                        "expected_total_pages": 1, "pages_received": 1,
+                        "pages": [{"actual_page": 1, "accepted": True,
+                                   "raw_ref": "page-1.json"}]})
     tools = MockTools(raw)
     result = acquire(tools, url, {"max_pages": 20, "max_jobs": 1000})
     name, config, _, options = tools.calls[0]
@@ -211,7 +216,82 @@ def test_hotjob_builds_bounded_public_list_config():
     assert config["pagination"] == {"location": "body", "path": "currentPage", "start": 1, "max_pages": 20}
     assert config["response"]["total_pages_path"] == "data.pageForm.totalPage"
     assert result["jobs"][0]["url"].endswith("school.html#abc")
-    assert result["status"] == "partial" and not result["coverage"]["complete"]
+    assert result["status"] == "ok" and not result["coverage"]["complete"]
+    assert result["coverage"]["jd_complete"] is False
+    assert result["coverage"]["list_completion_evidence"]["expected_total"] == 1
+
+
+def test_hotjob_does_not_promote_unproved_last_page():
+    url = "https://wecruit.hotjob.cn/SU61458d83bef57c54dcb4e43f/pb/school.html#/"
+    raw = doc(url, status="partial", jobs=[{"id": "abc", "title": "AI"}],
+              coverage={"complete": False, "list_complete": True,
+                        "stop_reason": "last_page", "expected_total": 2,
+                        "expected_total_pages": 1, "pages_received": 1,
+                        "pages": [{"actual_page": 1, "accepted": True,
+                                   "raw_ref": "page-1.json"}]})
+    result = acquire(MockTools(raw), url)
+    assert result["status"] == "partial"
+    assert "list_completion_evidence" not in result["coverage"]
+
+
+def test_mokahr_terminal_list_success_does_not_require_jd_bodies():
+    url = "https://app.mokahr.com/campus-recruitment/acme/123#/jobs"
+    raw = doc(url, status="partial", jobs=[{"id": "one", "title": "AI"}],
+              html_paths=["page-1.html"],
+              coverage={"complete": False, "list_complete": True,
+                        "jd_complete": False, "pages_seen": 1,
+                        "stop_reason": "terminal_pagination"})
+    result = acquire(MockTools(raw), url)
+    assert result["status"] == "ok"
+    assert result["coverage"]["complete"] is False
+    assert result["coverage"]["list_completion_evidence"]["pages_seen"] == 1
+
+
+def test_mokahr_terminal_without_artifact_evidence_stays_partial():
+    url = "https://app.mokahr.com/campus-recruitment/acme/123#/jobs"
+    raw = doc(url, status="partial", jobs=[{"id": "one", "title": "AI"}],
+              coverage={"complete": False, "list_complete": True,
+                        "pages_seen": 1, "stop_reason": "terminal_pagination"})
+    result = acquire(MockTools(raw), url)
+    assert result["status"] == "partial"
+
+
+def test_mokahr_offline_snapshots_prove_stable_terminal_list(tmp_path):
+    url = "https://app.mokahr.com/campus-recruitment/acme/123#/jobs"
+    page1 = tmp_path / "page1.html"
+    page2 = tmp_path / "page2.html"
+    page3 = tmp_path / "page3.html"
+    page1.write_text('<a href="#/job/one-1">岗位一</a>', encoding="utf-8")
+    final = '<a href="#/job/two-2">岗位二</a>'
+    page2.write_text(final, encoding="utf-8")
+    page3.write_text(final + "<!-- stable render marker -->", encoding="utf-8")
+    first = __import__("jobprep.html_extract", fromlist=["extract_html"]).extract_html(
+        page1.read_text(encoding="utf-8"), url)["jobs"]
+    second = __import__("jobprep.html_extract", fromlist=["extract_html"]).extract_html(
+        page2.read_text(encoding="utf-8"), url)["jobs"]
+    raw = doc(url, status="partial", jobs=first + second,
+              html_paths=[str(page1), str(page2), str(page3)],
+              coverage={"complete": False, "list_complete": False,
+                        "pages_seen": 2, "stop_reason": "unknown_pagination"})
+    result = acquire(MockTools(raw), url)
+    assert result["status"] == "ok"
+    assert result["coverage"]["stop_reason"] == "stable_terminal_snapshots"
+    assert result["coverage"]["list_completion_evidence"]["job_count"] == 2
+
+
+def test_mokahr_offline_snapshots_reject_incomplete_identity_union(tmp_path):
+    url = "https://app.mokahr.com/campus-recruitment/acme/123#/jobs"
+    page1 = tmp_path / "page1.html"
+    page2 = tmp_path / "page2.html"
+    page1.write_text('<a href="#/job/one-1">岗位一</a>', encoding="utf-8")
+    page2.write_text('<a href="#/job/one-1">岗位一</a>', encoding="utf-8")
+    raw = doc(url, status="partial", jobs=[{"id": "unobserved", "title": "岗位二"}],
+              html_paths=[str(page1), str(page2)],
+              coverage={"complete": False, "list_complete": False,
+                        "pages_seen": 1, "stop_reason": "unknown_pagination"})
+    result = acquire(MockTools(raw), url)
+    assert result["status"] == "partial"
+    assert result["coverage"]["stop_reason"] == "unknown_pagination"
 
 
 def test_hotjob_root_discovers_suite_before_public_api():
@@ -323,6 +403,17 @@ def test_feishu_discovery_uses_only_observed_same_host_link():
     assert result["status"] == "partial" and not result["coverage"]["complete"]
     assert result["coverage"]["search_applied"] is False
     assert result["acquisition"]["provenance"][-1]["artifact_refs"]["json_paths"] == ["page.json"]
+
+
+def test_feishu_campus_landing_is_discovered_with_one_bounded_probe():
+    url = "https://tenant.jobs.feishu.cn/Campus"
+    target = "https://tenant.jobs.feishu.cn/2027/position/list"
+    tools = MockTools(doc(url, links=[{"url": "/2027/position/list"}]), doc(target))
+    result = acquire(tools, url, {"max_pages": 25})
+    assert result["acquisition"]["adapter"] == "FeishuPublicPortal"
+    assert [call[0] for call in tools.calls] == ["web", "feishu_list"]
+    assert tools.calls[0][3]["max_pages"] == 1
+    assert tools.calls[1][1] == target
 
 
 @pytest.mark.parametrize("links,reason", [([], "list_link_not_found"),

@@ -73,9 +73,13 @@ def test_finalize_requires_both_structured_duty_and_require():
     zhiye.finalize_public_list(result, 2)
     assert complete["needs_details"] is False
     assert missing["needs_details"] is True
+    assert result["status"] == "ok"
     assert result["coverage"]["list_complete"] is True
     assert result["coverage"]["jd_complete"] is False
-    assert result["coverage"]["stop_reason"] == "zhiye_details_required"
+    assert result["coverage"]["complete"] is False
+    assert result["coverage"]["details_optional"] is True
+    assert result["coverage"]["detail_gap"] == "duties_or_requirements_incomplete"
+    assert result["coverage"]["stop_reason"] == "zhiye_public_api_list_complete_details_optional"
     assert result["coverage"]["detail_urls"] == [missing["url"]]
 
 
