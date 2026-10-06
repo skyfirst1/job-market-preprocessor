@@ -109,6 +109,24 @@ HTML 导入只读取同目录树内的相对图片，不读取任意本机文件
 
 ## 输出与语义审核
 
+可投公司与岗位 canonical 表均包含 `screening_scope`；岗位表同时包含
+`industry`。默认分析 scope 为 `medical`，并沿用原医疗行业正则。新的行业运行可向
+`build_rows` / `update_application_targets` 传入独立的 `screening_scope` 和
+`industry_pattern`，因此制造业等行业不需要修改医疗筛选常量。各行业应先写入独立
+目录，再安全合并到第三个目录：
+
+```powershell
+.\.venv\Scripts\python.exe scripts\merge_target_scopes.py `
+  --scope medical=exports/targets `
+  --scope manufacturing=exports/targets_manufacturing `
+  --output-dir exports/targets_combined
+```
+
+合并按 `screening_scope + company_id/jd_id` 去重，不覆盖或写入任何输入目录；
+`summary.json` 的 `by_scope` 分别统计各行业。合并前会校验 verified 公司和岗位仍是
+对应完整表的子集。即使同一公司或同一稳定岗位 ID 同时出现在两个行业，也能通过
+`screening_scope` 明确区分。
+
 - `data/workstation.sqlite3`：全部来源、去重 URL、持久任务队列和事件。
 - `data/artifacts/`：按 SHA256 保存原始 HTML、图片和脱敏 JSON。
 - `data/ocr/`：切片识别缓存及独立计数账本。

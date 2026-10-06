@@ -102,6 +102,70 @@ VISIBLE_DELIVERIES = {
 
 URL_RE = re.compile(r"https?://[^\s<>\"']+", re.IGNORECASE)
 
+DETAIL_COLUMN_NAMES = {
+    "description",
+    "job_description",
+    "role_description",
+    "responsibilities",
+    "responsibility",
+    "requirements",
+    "requirement",
+    "qualifications",
+    "evidence",
+    "evidence_excerpt",
+    "evidence_level",
+    "audit",
+    "audit_note",
+    "audit_notes",
+    "uncertainty",
+    "uncertainty_note",
+    "source",
+    "source_type",
+    "source_detail",
+    "source_details",
+    "source_url",
+    "source_pool",
+    "source_row",
+    "announcement_url",
+    "acquisition_url",
+    "page_title",
+    "structured_job_title",
+    "details_verified",
+    "verification_status",
+    "fetch_status",
+    "ownership_confidence",
+    "ownership_evidence",
+    "created_at",
+    "updated_at",
+    "fetched_at",
+    "published_at",
+    "verified_at",
+    "timestamp",
+}
+PRIMARY_COMPANY_COLUMNS = {"company", "company_name", "公司", "公司名称"}
+PRIMARY_ROLE_COLUMNS = {"role", "role_title", "job_title", "岗位", "岗位名称", "职位", "职位名称"}
+COMPACT_COLUMN_NAMES = {
+    "location",
+    "city",
+    "category",
+    "priority",
+    "priority_label",
+    "best_priority",
+    "status",
+    "target_status",
+    "jd_status",
+    "ownership_status",
+    "matched_role_count",
+    "structured_jobs_count",
+    "recruitment_type",
+    "enterprise_nature",
+    "地点",
+    "城市",
+    "类别",
+    "优先级",
+    "状态",
+}
+
 
 def _html_page(title: str, body: str) -> bytes:
     return f"""<!doctype html>
@@ -112,13 +176,17 @@ header{{position:sticky;top:0;display:flex;align-items:center;gap:14px;padding:1
 header a{{color:#fff;font-weight:700;text-decoration:none}} header span{{overflow-wrap:anywhere}}
 main{{padding:14px}} pre{{margin:0;padding:14px;background:#fff;border:1px solid #d0d5dd;white-space:pre-wrap;overflow-wrap:anywhere}}
 .csv-tools{{position:sticky;top:45px;z-index:3;display:flex;align-items:center;gap:12px;flex-wrap:wrap;padding:10px;background:#fff;border:1px solid #d0d5dd;border-bottom:0}}
-.csv-tools input{{flex:1 1 320px;min-width:180px;padding:7px 9px;border:1px solid #98a2b3;border-radius:4px;font:inherit}}
+.csv-tools input[type="search"]{{flex:1 1 320px;min-width:180px;padding:8px 10px;border:1px solid #98a2b3;border-radius:4px;font:inherit}}
 .csv-count{{color:#475467;white-space:nowrap}}.csv-tools a{{color:#087ea4;text-decoration:none;font-weight:600}}.csv-tools label{{display:flex;align-items:center;gap:6px;white-space:nowrap}}
-.table-wrap{{max-height:calc(100vh - 122px);overflow:auto;background:#fff;border:1px solid #d0d5dd}} table{{border-collapse:separate;border-spacing:0;width:max-content;min-width:100%;table-layout:fixed;font-size:12px}}
-th,td{{border-right:1px solid #e1e5ea;border-bottom:1px solid #e1e5ea;padding:7px 8px;text-align:left;vertical-align:top;min-width:110px;max-width:360px;white-space:normal;overflow-wrap:anywhere}}
+.table-wrap{{max-height:calc(100vh - 122px);overflow:auto;background:#fff;border:1px solid #d0d5dd}} table{{border-collapse:separate;border-spacing:0;width:max-content;min-width:100%;table-layout:fixed;font-size:14px}}
+th,td{{border-right:1px solid #e1e5ea;border-bottom:1px solid #e1e5ea;padding:9px 10px;text-align:left;vertical-align:top;width:150px;min-width:150px;max-width:240px;white-space:normal;overflow-wrap:anywhere}}
+th.column-company,td.column-company{{position:sticky;left:0;width:190px;min-width:190px;max-width:240px;background:#fff;z-index:1;box-shadow:1px 0 #d0d5dd}}
+th.column-company{{z-index:4;background:#eef2f3}}th.column-role,td.column-role{{width:260px;min-width:220px;max-width:340px}}th.column-compact,td.column-compact{{width:120px;min-width:100px;max-width:150px}}
+.detail-column{{display:none}}table.show-details .detail-column{{display:table-cell}}
 th{{position:sticky;top:0;z-index:2;background:#eef2f3;cursor:pointer;user-select:none;box-shadow:0 1px #d0d5dd}}th:hover{{background:#e1e8ec}}th::after{{content:" ↕";color:#98a2b3}}th[data-sort="asc"]::after{{content:" ↑";color:#087ea4}}th[data-sort="desc"]::after{{content:" ↓";color:#087ea4}}
 td a{{color:#087ea4;overflow-wrap:anywhere}}td details{{max-width:100%}}td summary{{cursor:pointer;color:#344054}}.cell-full{{margin-top:6px;padding-top:6px;border-top:1px solid #eaecf0}}tr[hidden]{{display:none}}
 iframe{{width:100%;height:calc(100vh - 78px);border:1px solid #d0d5dd;background:#fff}}
+@media (max-width:700px){{main{{padding:8px}}.csv-tools{{top:45px;gap:8px;padding:8px}}.csv-tools input[type="search"]{{flex-basis:100%;width:100%;min-width:0}}.csv-tools label,.csv-count,.csv-tools a{{white-space:normal}}.table-wrap{{max-height:calc(100vh - 170px)}}th,td{{min-width:130px;max-width:200px}}th.column-company,td.column-company{{min-width:150px;max-width:180px}}th.column-role,td.column-role{{min-width:190px;max-width:240px}}}}
 </style></head><body><header><a href=\"/\">返回看板</a><span>{html.escape(title)}</span></header><main>{body}</main></body></html>""".encode("utf-8")
 
 
@@ -151,6 +219,25 @@ def _csv_cell(value: str) -> str:
     )
 
 
+def _column_kind(name: str) -> str:
+    normalized = name.strip().casefold().replace(" ", "_").replace("-", "_")
+    if normalized in PRIMARY_COMPANY_COLUMNS:
+        return "column-company"
+    if normalized in PRIMARY_ROLE_COLUMNS:
+        return "column-role"
+    if normalized in COMPACT_COLUMN_NAMES:
+        return "column-compact"
+    if (
+        normalized in DETAIL_COLUMN_NAMES
+        or normalized == "id"
+        or normalized.endswith("_id")
+        or normalized.startswith(("source_", "evidence_", "audit_", "uncertainty_", "fetch_", "verification_"))
+        or normalized.endswith(("_description", "_requirements", "_responsibilities", "_at", "_time", "_date"))
+    ):
+        return "detail-column"
+    return ""
+
+
 def _csv_preview(path: Path, relative: str | None = None) -> str:
     text = path.read_text(encoding="utf-8-sig", errors="replace")
     rows = list(csv.reader(io.StringIO(text)))
@@ -175,8 +262,10 @@ def _csv_preview(path: Path, relative: str | None = None) -> str:
         if company_column is not None
         else 0
     )
+    column_kinds = [_column_kind(value) for value in rows[0]]
+    detail_count = sum(kind == "detail-column" for kind in column_kinds)
     head = "".join(
-        f'<th scope="col" data-column="{index}" tabindex="0">{html.escape(value)}</th>'
+        f'<th scope="col" data-column="{index}" class="{column_kinds[index]}" tabindex="0">{html.escape(value)}</th>'
         for index, value in enumerate(rows[0])
     )
     body = "".join(
@@ -186,8 +275,8 @@ def _csv_preview(path: Path, relative: str | None = None) -> str:
                 row[company_column] if company_column < len(row) else "", applied_tokens
             ) else "false",
             "".join(
-                f'<td data-value="{html.escape(value, quote=True)}">{_csv_cell(value)}</td>'
-                for value in row + [""] * (width - len(row))
+                f'<td class="{column_kinds[index]}" data-value="{html.escape(value, quote=True)}">{_csv_cell(value)}</td>'
+                for index, value in enumerate(row + [""] * (width - len(row)))
             ),
         )
         for row in rows[1:]
@@ -197,9 +286,14 @@ def _csv_preview(path: Path, relative: str | None = None) -> str:
         f'<label><input id="show-applied" type="checkbox">显示已投（{applied_count}）</label>'
         if applied_count else ""
     )
+    detail_control = (
+        f'<label><input id="show-detail-columns" type="checkbox" aria-controls="csv-table">显示详情列（{detail_count}）</label>'
+        if detail_count else ""
+    )
     return f'''<div class="csv-tools">
 <input id="csv-search" type="search" placeholder="搜索当前 CSV…" aria-label="搜索当前 CSV">
 {applied_control}
+{detail_control}
 <span id="csv-count" class="csv-count">显示 {len(rows) - 1 - applied_count} / {len(rows) - 1} 行</span>
 <a href="{html.escape(raw_href, quote=True)}">下载原始 CSV（含已投）</a>
 </div>
@@ -211,6 +305,7 @@ def _csv_preview(path: Path, relative: str | None = None) -> str:
   const rows = Array.from(tbody.rows);
   const search = document.getElementById('csv-search');
   const showApplied = document.getElementById('show-applied');
+  const showDetails = document.getElementById('show-detail-columns');
   const count = document.getElementById('csv-count');
   const updateFilter = () => {{
     const query = search.value.trim().toLocaleLowerCase('zh-CN');
@@ -225,6 +320,7 @@ def _csv_preview(path: Path, relative: str | None = None) -> str:
   }};
   search.addEventListener('input', updateFilter);
   showApplied?.addEventListener('change', updateFilter);
+  showDetails?.addEventListener('change', () => table.classList.toggle('show-details', showDetails.checked));
   const sortColumn = column => {{
     const header = table.tHead.rows[0].cells[column];
     const direction = header.dataset.sort === 'asc' ? 'desc' : 'asc';

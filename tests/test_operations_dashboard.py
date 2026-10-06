@@ -9,6 +9,8 @@ from scripts.serve_operations_dashboard import (
     DashboardHandler,
     DashboardServer,
     _csv_preview,
+    _column_kind,
+    _html_page,
     build_catalog,
 )
 
@@ -68,6 +70,46 @@ def test_csv_preview_has_search_sort_counts_expansion_and_safe_links(tmp_path):
     assert 'href="javascript:' not in preview
     assert "&lt;script&gt;alert(1)&lt;/script&gt;" in preview
     assert 'href="/raw/data/sample.csv"' in preview
+
+
+def test_csv_preview_hides_detail_and_machine_id_columns_without_removing_search_data(tmp_path):
+    csv_path = tmp_path / "targets.csv"
+    csv_path.write_text(
+        "company,role_title,location,company_id,jd_id,evidence,requirements,source_url,updated_at\n"
+        "测试公司,大模型工程师,北京,company-123,jd-456,模型证据,熟悉深度学习,https://example.com/job,2026-10-06\n",
+        encoding="utf-8",
+    )
+
+    preview = _csv_preview(csv_path, "exports/targets/job_targets.csv")
+
+    assert 'id="show-detail-columns"' in preview
+    assert "显示详情列（6）" in preview
+    assert '<th scope="col" data-column="0" class="column-company"' in preview
+    assert '<th scope="col" data-column="1" class="column-role"' in preview
+    assert '<th scope="col" data-column="2" class="column-compact"' in preview
+    assert '<th scope="col" data-column="3" class="detail-column"' in preview
+    assert '<th scope="col" data-column="4" class="detail-column"' in preview
+    assert 'class="detail-column" data-value="company-123"' in preview
+    assert 'data-search="测试公司 大模型工程师 北京 company-123 jd-456 模型证据 熟悉深度学习 https://example.com/job 2026-10-06"' in preview
+    assert "table.classList.toggle('show-details', showDetails.checked)" in preview
+
+
+def test_csv_preview_styles_keep_readable_type_and_narrow_screen_layout():
+    page = _html_page("preview", '<table id="csv-table"></table>').decode("utf-8")
+
+    assert "table{border-collapse:separate" in page
+    assert "font-size:14px" in page
+    assert ".detail-column{display:none}" in page
+    assert "table.show-details .detail-column{display:table-cell}" in page
+    assert "@media (max-width:700px)" in page
+
+
+def test_target_column_policy_keeps_action_links_visible_and_source_details_hidden():
+    for name in ("company_id", "jd_id", "source_pool", "source_row", "source_url", "page_title", "fetch_status"):
+        assert _column_kind(name) == "detail-column"
+    assert _column_kind("structured_job_title") == "detail-column"
+    assert _column_kind("application_url") == ""
+    assert _column_kind("structured_job_url") == ""
 
 
 def test_target_preview_hides_applied_companies_by_default(tmp_path, monkeypatch):

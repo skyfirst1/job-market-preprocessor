@@ -29,6 +29,25 @@ def test_csv_matched_roles_are_applicable_without_page_evidence():
     assert companies[0]["evidence_level"] == "csv_declared"
     assert len(jobs) == 2
     assert {row["evidence_level"] for row in jobs} == {"csv_declared"}
+    assert companies[0]["screening_scope"] == "medical"
+    assert {row["screening_scope"] for row in jobs} == {"medical"}
+    assert {row["industry"] for row in jobs} == {"医疗/医药/生物"}
+
+
+def test_custom_scope_and_industry_pattern_reuse_builder_without_changing_medical_default():
+    manufacturing = candidate(company="乙制造", industry="高端装备制造")
+    default_companies, _ = build_rows([manufacturing], {})
+    companies, jobs = build_rows(
+        [manufacturing],
+        {},
+        screening_scope="manufacturing",
+        industry_pattern=r"制造|装备|工业",
+    )
+
+    assert default_companies == []
+    assert companies[0]["screening_scope"] == "manufacturing"
+    assert jobs[0]["screening_scope"] == "manufacturing"
+    assert jobs[0]["industry"] == "高端装备制造"
 
 
 def test_explicit_soe_is_excluded():
@@ -215,9 +234,36 @@ def test_stage_marker_writes_deduplicated_outputs(tmp_path: Path):
     assert result["jd_rows"] == 2
     assert result["verified_companies"] == 1
     assert result["verified_jd_rows"] == 2
+    assert result["screening_scope"] == "medical"
+    assert result["by_scope"]["medical"]["jd_rows"] == 2
     assert len(list(csv.DictReader((tmp_path / "out" / "job_targets.csv").open(encoding="utf-8-sig")))) == 2
     assert len(list(csv.DictReader((tmp_path / "out" / "verified_companies.csv").open(encoding="utf-8-sig")))) == 1
     assert len(list(csv.DictReader((tmp_path / "out" / "verified_job_targets.csv").open(encoding="utf-8-sig")))) == 2
+
+
+def test_update_accepts_manufacturing_scope_and_pattern(tmp_path: Path):
+    row = candidate(company="乙制造", industry="智能制造")
+    source = tmp_path / "candidates.csv"
+    with source.open("w", encoding="utf-8-sig", newline="") as handle:
+        writer = csv.DictWriter(handle, fieldnames=list(row)); writer.writeheader(); writer.writerow(row)
+    batch_summary = tmp_path / "summary.json"
+    batch_summary.write_text('{"stage_complete": true}', encoding="utf-8")
+
+    result = update_application_targets(
+        source,
+        batch_summary,
+        tmp_path / "missing.sqlite3",
+        tmp_path / "out",
+        screening_scope="manufacturing",
+        industry_pattern=r"制造|工业",
+    )
+    companies = list(csv.DictReader((tmp_path / "out" / "applicable_companies.csv").open(encoding="utf-8-sig")))
+    jobs = list(csv.DictReader((tmp_path / "out" / "job_targets.csv").open(encoding="utf-8-sig")))
+
+    assert result["by_scope"]["manufacturing"]["applicable_companies"] == 1
+    assert companies[0]["screening_scope"] == "manufacturing"
+    assert jobs[0]["screening_scope"] == "manufacturing"
+    assert jobs[0]["industry"] == "智能制造"
 
 
 def test_update_writes_blank_role_company_only_to_pending_file(tmp_path: Path):

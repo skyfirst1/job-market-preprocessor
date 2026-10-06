@@ -41,14 +41,14 @@ AI_MENTION = re.compile(
 )
 
 COMPANY_COLUMNS = [
-    "company_id", "company", "enterprise_nature", "ownership_status", "ownership_confidence",
+    "screening_scope", "company_id", "company", "enterprise_nature", "ownership_status", "ownership_confidence",
     "ownership_evidence", "industry", "best_priority", "matched_role_count", "graduation_year",
     "location", "deadline", "application_url", "announcement_url", "acquisition_url", "source_pool",
     "source_row", "target_status", "evidence_level", "verification_status", "fetch_status", "fetch_updated_at", "page_title", "structured_jobs_count",
     "evidence_summary", "audit_evidence", "uncertainty",
 ]
 JOB_COLUMNS = [
-    "jd_id", "company_id", "company", "priority", "priority_label", "role_title", "jd_status",
+    "screening_scope", "industry", "jd_id", "company_id", "company", "priority", "priority_label", "role_title", "jd_status",
     "details_verified", "evidence_level", "verification_status", "structured_job_title", "structured_job_url", "description", "requirements",
     "location", "graduation_year", "deadline", "application_url", "source_url", "source_pool",
     "source_row", "fetch_status", "fetch_updated_at", "evidence", "audit_evidence", "uncertainty",
@@ -70,6 +70,14 @@ def _clean(value: Any) -> str:
 
 def _stable_id(*parts: str) -> str:
     return hashlib.sha256("\x1f".join(_clean(part).casefold() for part in parts).encode("utf-8")).hexdigest()[:24]
+
+
+def _industry_pattern(pattern: re.Pattern[str] | str | None) -> re.Pattern[str]:
+    if pattern is None:
+        return MEDICAL
+    if isinstance(pattern, re.Pattern):
+        return pattern
+    return re.compile(pattern, re.I)
 
 
 def _read_csv(path: Path) -> list[dict[str, str]]:
@@ -399,7 +407,14 @@ def build_rows(
     candidates: list[dict[str, str]],
     store: dict[str, dict[str, Any]],
     audit_confirmations: dict[tuple[str, str], str] | None = None,
+    *,
+    screening_scope: str = "medical",
+    industry_pattern: re.Pattern[str] | str | None = None,
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    scope = _clean(screening_scope)
+    if not scope:
+        raise ValueError("screening_scope must not be blank")
+    accepted_industry = _industry_pattern(industry_pattern)
     companies: dict[str, dict[str, Any]] = {}
     jobs_out: dict[str, dict[str, Any]] = {}
     for row in candidates:
@@ -407,7 +422,7 @@ def build_rows(
         industry = _clean(row.get("industry"))
         ownership_status, ownership_confidence, ownership_evidence = _ownership(row)
         source_location = _clean(row.get("location"))
-        if not company or not MEDICAL.search(f"{company} {industry}") or ownership_status.startswith("明确国企"):
+        if not company or not accepted_industry.search(f"{company} {industry}") or ownership_status.startswith("明确国企"):
             continue
         task = _task_for(row, store)
         result = task.get("result") or {}
@@ -465,7 +480,7 @@ def build_rows(
             default="",
         )
         companies[company_id] = {
-            "company_id": company_id, "company": company,
+            "screening_scope": scope, "company_id": company_id, "company": company,
             "enterprise_nature": _clean(row.get("enterprise_nature")),
             "ownership_status": ownership_status, "ownership_confidence": ownership_confidence,
             "ownership_evidence": ownership_evidence, "industry": industry,
@@ -509,6 +524,7 @@ def build_rows(
             if ownership_confidence != "medium":
                 uncertainty.append("公司性质需人工核验")
             jobs_out[jd_id] = {
+                "screening_scope": scope, "industry": industry,
                 "jd_id": jd_id, "company_id": company_id, "company": company,
                 "priority": role["priority"], "priority_label": role["category"], "role_title": title,
                 "jd_status": jd_status, "details_verified": verified,
@@ -564,6 +580,24 @@ def _normalize_job_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
         ):
             normalized[key] = row
     return list(normalized.values())
+
+
+def _ensure_canonical_dimensions(
+    company_rows: Iterable[dict[str, Any]],
+    job_rows: Iterable[dict[str, Any]],
+    *,
+    default_scope: str = "medical",
+) -> None:
+    """Backfill new dimensions when refreshing canonical files written by older versions."""
+    industry_by_company: dict[tuple[str, str], str] = {}
+    for row in company_rows:
+        row["screening_scope"] = _clean(row.get("screening_scope")) or default_scope
+        industry_by_company[(row["screening_scope"], _clean(row.get("company_id")))] = _clean(row.get("industry"))
+    for row in job_rows:
+        row["screening_scope"] = _clean(row.get("screening_scope")) or default_scope
+        row["industry"] = _clean(row.get("industry")) or industry_by_company.get(
+            (row["screening_scope"], _clean(row.get("company_id"))), ""
+        )
 
 
 def load_audit_confirmations(path: Path | None) -> dict[tuple[str, str], str]:
@@ -634,6 +668,8 @@ def update_application_targets(
     force: bool = False,
     partial_report_path: Path | None = None,
     audit_path: Path | None = None,
+    screening_scope: str = "medical",
+    industry_pattern: re.Pattern[str] | str | None = None,
 ) -> dict[str, Any]:
     candidates = _read_csv(candidates_path)
     batch_summary = _read_json(summary_path)
@@ -644,7 +680,13 @@ def update_application_targets(
     if not triggered:
         return {"updated": False, "trigger": "waiting", "unique_input_companies": unique_companies}
     audit_confirmations = load_audit_confirmations(audit_path)
-    companies, jobs = build_rows(candidates, store, audit_confirmations)
+    companies, jobs = build_rows(
+        candidates,
+        store,
+        audit_confirmations,
+        screening_scope=screening_scope,
+        industry_pattern=industry_pattern,
+    )
     error_statuses = {"error", "blocked", "failed"}
     applicable_companies = [row for row in companies if row["target_status"] == "可投候选"]
     unverified_levels = {"csv_declared", LIMITED_EVIDENCE}
@@ -674,6 +716,7 @@ def update_application_targets(
     summary = {
         "updated": True,
         "generated_at": datetime.now(timezone.utc).isoformat(),
+        "screening_scope": _clean(screening_scope),
         "trigger": "20_companies" if unique_companies >= 20 else "stage_complete" if batch_summary.get("stage_complete") else "forced",
         "unique_input_companies": unique_companies,
         "analyzed_companies": len(companies),
@@ -694,6 +737,17 @@ def update_application_targets(
         },
         "verified_structured_jds": sum(row["details_verified"] == "true" for row in jobs),
         "evidence_backed_jds": len(jobs),
+        "by_scope": {
+            _clean(screening_scope): {
+                "analyzed_companies": len(companies),
+                "applicable_companies": len(applicable_companies),
+                "verified_companies": len(verified_companies),
+                "pending_discovery_companies": len(pending_companies),
+                "error_companies": len(error_companies),
+                "jd_rows": len(jobs),
+                "verified_jd_rows": len(verified_jobs),
+            }
+        },
         "partial": {
             "current": sum(row["fetch_status"] == "partial" for row in companies),
             "reasons": dict(sorted(partial_reasons.items())),
@@ -750,6 +804,11 @@ def refresh_limited_source_targets(
     verified_companies = [row for row in existing("verified_companies.csv") if row.get("company") not in affected]
     all_jobs = [row for row in existing("job_targets.csv") if row.get("company") not in affected]
     verified_jobs = [row for row in existing("verified_job_targets.csv") if row.get("company") not in affected]
+
+    _ensure_canonical_dimensions(
+        applicable + pending + errors + verified_companies,
+        all_jobs + verified_jobs,
+    )
 
     error_statuses = {"error", "blocked", "failed"}
     for row in companies:
@@ -820,6 +879,18 @@ def refresh_limited_source_targets(
         by_fetch_status={status: sum(row.get("fetch_status") == status for row in company_rows) for status in sorted({row.get("fetch_status", "") for row in company_rows})},
         verified_structured_jds=sum(row.get("details_verified") == "true" for row in all_jobs),
         evidence_backed_jds=len(all_jobs),
+        screening_scope="medical",
+        by_scope={
+            "medical": {
+                "analyzed_companies": len(company_rows),
+                "applicable_companies": len(applicable),
+                "verified_companies": len(verified_companies),
+                "pending_discovery_companies": len(pending),
+                "error_companies": len(errors),
+                "jd_rows": len(all_jobs),
+                "verified_jd_rows": len(verified_jobs),
+            }
+        },
         partial={"current": sum(row.get("fetch_status") == "partial" for row in company_rows), "reasons": dict(sorted(partial_reasons.items()))},
         limited_source_review={
             "reviewed_sources": reviewed_sources,

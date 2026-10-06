@@ -21,6 +21,8 @@ The check must cover all of the following:
 5. **Scope fields:** Revalidate location, enterprise nature, recruitment type, graduation year, and role level against the user's latest criteria. Do not preserve an older location or seniority rule after the user has changed it.
 6. **Canonical data quality:** Keep `role_title` to the actual title rather than concatenated page or JD text. Preserve a direct job URL when available. If the decision relies on evidence stored elsewhere, carry a concise evidence excerpt or a stable source reference into the canonical row.
 7. **Conflicts and uncertainty:** Resolve conflicts between the current user instructions, the skill, reports, and canonical files before delivery. If the task does not authorize correcting the affected canonical file, report the exact affected rows and the unresolved consequence instead of presenting the result as clean.
+8. **Industry scope:** Every canonical company and JD row must carry a nonempty `screening_scope` and the source `industry` text. Use stable scope names such as `medical` or `manufacturing`; do not infer the scope from the output path. When scopes are merged, deduplicate within each scope, preserve the scope on every row, report counts by scope, and verify each scope's `verified` rows remain a subset of its complete candidate rows.
+9. **Machine identifiers:** Keep `company_id` and `jd_id` for joins, deduplication, and auditability, but do not treat them as user-facing evidence or a primary display field. Never replace company names, role titles, industry scope, or source URLs with opaque IDs in a human-facing deliverable.
 
 ## Deliverables
 
