@@ -9,11 +9,61 @@ import re
 from .validation import configured_list, http_url
 from .job51_static import Job51StaticPortal
 from .job51_xyz import Job51XYZPublicPortal
-from .pool import accept_complete_list, accept_stable_mokahr_snapshots
+from .pool import (accept_complete_list, accept_stable_mokahr_snapshots,
+                   accept_substantial_partial_list, GENERIC_BROWSER_LIMITS)
 
 
 STATUSES = {"ok", "partial", "error", "blocked", "deleted"}
 FEISHU_HOST = "jobs.feishu.cn"
+FIXED_ROUTE_ADAPTERS = frozenset({
+    "WechatImage", "WjxPublicForm", "Job51XYZPublicPortal", "Job51StaticPortal",
+    "MokahrJobDetailPortal", "MokahrPublicPortal", "HotjobPublicPortal",
+    "ZhiyeJobDetailPortal", "ZhiyePublicPortal", "FeishuPublicPortal",
+    "ConfiguredPublicList",
+})
+
+
+def _reserved_host(url):
+    host = http_url(url).hostname.lower().rstrip(".")
+    return (host == "mp.weixin.qq.com"
+            or host == "51job.com" or host.endswith(".51job.com")
+            or host == "app.mokahr.com"
+            or host == "jobs.feishu.cn" or host.endswith(".jobs.feishu.cn")
+            or host == "zhiye.com" or host.endswith(".zhiye.com")
+            or host == "hotjob.cn" or host.endswith(".hotjob.cn")
+            or any(host == suffix or host.endswith("." + suffix)
+                   for suffix in ("wjx.cn", "wjx.top")))
+
+
+def _effective_static_content(result):
+    if result.get("status") in {"blocked", "deleted"}:
+        return True
+    coverage = result.get("coverage") or {}
+    if coverage.get("complete") is True or coverage.get("list_complete") is True:
+        return True
+    if result.get("jobs"):
+        return True
+    links = result.get("links") or []
+    if any(isinstance(link, dict) and link.get("kind") in {"job", "detail"}
+           for link in links):
+        return True
+    text = result.get("text")
+    if not isinstance(text, str) or len(text.strip()) < 120:
+        return False
+    lowered = text.lower()
+    return any(term in lowered for term in
+               ("招聘", "职位", "岗位", "任职要求", "job", "position", "career"))
+
+
+def _bounded_number(value, default, maximum, *, integer):
+    if isinstance(value, bool):
+        raise ValueError("generic fallback bounds must be numeric")
+    try:
+        number = int(value) if integer else float(value)
+    except (TypeError, ValueError):
+        number = default
+    floor = 0 if integer and default == 0 else (1 if integer else 0.1)
+    return min(maximum, max(floor, number))
 
 
 def _public_portal(url):
@@ -205,6 +255,7 @@ class AcquisitionContext:
             self.provenance.append({"tool": method, "url": result["url"],
                                     "final_url": result.get("final_url", result["url"]),
                                     "method": result.get("method"),
+                                    "job_count": len(result.get("jobs") or []),
                                     "artifact_refs": {key: deepcopy(result[key]) for key in
                                                       ("html_path", "html_paths", "json_paths", "evidence")
                                                       if key in result},
@@ -236,15 +287,86 @@ class BaseAdapter:
 class GenericWeb(BaseAdapter):
     name = "genericweb"
     priority = -100
-    scope = "Any HTTP(S) URL; delegates transport and coverage to AppTools.web"
-    parameters = {"browser": {"default": "auto", "values": [True, False, "auto"]},
-                  "max_pages": {"type": "integer"}, "max_images": {"type": "integer"}}
+    scope = "Any HTTP(S) URL; bounded static-HTTP fallback in the adapter pool"
+    parameters = {
+        "dynamic_fallback": {"type": "boolean", "default": True},
+        "max_pages": {"type": "integer", "default": 3, "maximum": 3},
+        "max_scrolls": {"type": "integer", "default": 3, "maximum": 3},
+        "timeout": {"type": "number", "default": 20, "maximum": 30},
+        "max_images": {"type": "integer"},
+    }
 
     def matches(self, url, options):
-        return True
+        return not _reserved_host(url)
 
     async def acquire(self, context):
-        return await context.call("web", context.url, context.options)
+        options = deepcopy(context.options)
+        dynamic_fallback = options.pop("dynamic_fallback", True)
+        if type(dynamic_fallback) is not bool:
+            raise ValueError("dynamic_fallback must be boolean")
+        options.pop("browser", None)
+        static_options = {**options, "browser": False, "max_scrolls": 0}
+        static_result = await context.call("web", context.url, static_options)
+        if _effective_static_content(static_result) or not dynamic_fallback:
+            context.provenance.append({"rule": "generic_static_pool",
+                                       "dynamic_fallback_attempted": False})
+            return static_result
+
+        limits = GENERIC_BROWSER_LIMITS
+        browser_options = {
+            **options,
+            "browser": True,
+            "max_pages": _bounded_number(options.get("max_pages"), 3,
+                                          limits["max_pages"], integer=True),
+            "max_scrolls": _bounded_number(options.get("max_scrolls"), 3,
+                                            limits["max_scrolls"], integer=True),
+            "timeout": _bounded_number(options.get("timeout"), 20,
+                                        limits["timeout"], integer=False),
+            "retries": 0,
+            "max_images": 0,
+        }
+        try:
+            browser_result = await context.call("web", context.url, browser_options)
+        except Exception as exc:
+            static_result["coverage"]["dynamic_fallback"] = {
+                "attempted": True,
+                "attempt_count": 1,
+                "effective": False,
+                "fresh_context": True,
+                "credentials_used": False,
+                "limits": {key: browser_options[key] for key in
+                           ("max_pages", "max_scrolls", "timeout")},
+                "status": "error",
+                "error_type": type(exc).__name__,
+            }
+            static_result.setdefault("warnings", []).append(
+                "One bounded browser fallback failed; the static result was preserved")
+            context.provenance.append({"rule": "generic_static_then_bounded_browser",
+                                       "dynamic_fallback_attempted": True,
+                                       "dynamic_fallback_effective": False,
+                                       "fresh_context": True, "credentials_used": False})
+            return static_result
+        browser_effective = _effective_static_content(browser_result)
+        result = browser_result if browser_effective else static_result
+        result["coverage"]["dynamic_fallback"] = {
+            "attempted": True,
+            "attempt_count": 1,
+            "effective": browser_effective,
+            "fresh_context": True,
+            "credentials_used": False,
+            "limits": {key: browser_options[key] for key in
+                       ("max_pages", "max_scrolls", "timeout")},
+            "status": browser_result.get("status"),
+            "stop_reason": browser_result.get("coverage", {}).get("stop_reason"),
+        }
+        context.provenance.append({"rule": "generic_static_then_bounded_browser",
+                                   "dynamic_fallback_attempted": True,
+                                   "dynamic_fallback_effective": browser_effective,
+                                   "fresh_context": True, "credentials_used": False})
+        if not browser_effective:
+            result.setdefault("warnings", []).append(
+                "One bounded browser fallback produced no effective recruitment content")
+        return result
 
 
 class WjxPublicForm(BaseAdapter):
@@ -751,6 +873,8 @@ class AdapterRegistry:
                 result = _canonical(raw)
             except (ValueError, TypeError) as exc:
                 raise ToolSchemaError(str(exc)) from exc
+            if adapter and adapter.name not in {"WechatImage", "WjxPublicForm"}:
+                result = accept_substantial_partial_list(result)
         except Exception as exc:
             reason = "invalid_schema" if isinstance(exc, ToolSchemaError) else (
                 "invalid_configuration" if context is None or isinstance(exc, ValueError) else "tool_exception")
@@ -772,8 +896,30 @@ class AdapterRegistry:
                 elif isinstance(exc, (NotImplementedError, AttributeError, ImportError)):
                     result.update(retryable=False, error_kind="unsupported_tool")
         previous = result.get("acquisition")
+        pool_attempts = []
+        if context:
+            for index, attempt in enumerate(context.attempts):
+                evidence = context.provenance[index] if index < len(context.provenance) else {}
+                pool_attempts.append({
+                    "adapter": adapter.name if adapter else None,
+                    "ordinal": attempt.get("ordinal"),
+                    "tool": attempt.get("tool"),
+                    "method": evidence.get("method"),
+                    "status": attempt.get("status"),
+                    "job_count": evidence.get("job_count", 0),
+                    "stop_reason": evidence.get("coverage", {}).get("stop_reason"),
+                })
+        if not pool_attempts:
+            pool_attempts.append({
+                "adapter": adapter.name if adapter else None,
+                "status": result.get("status"),
+                "job_count": len(result.get("jobs") or []),
+                "stop_reason": result.get("coverage", {}).get("stop_reason"),
+            })
         result["acquisition"] = {"adapter": adapter.name if adapter else None,
                                  "selection": "explicit" if isinstance(options, dict) and options.get("adapter") else "rules",
+                                 "adapter_pool": {"attempts": pool_attempts,
+                                                  "fixed_route": bool(adapter and adapter.name in FIXED_ROUTE_ADAPTERS)},
                                  "attempts": context.attempts if context else [],
                                  "provenance": context.provenance if context else []}
         if previous is not None:

@@ -18,6 +18,9 @@ AUDITABLE_TERMINALS = frozenset({
     "reported_total_reached",
 })
 
+DEFAULT_SUBSTANTIAL_JOB_COUNT = 20
+GENERIC_BROWSER_LIMITS = {"max_pages": 3, "max_scrolls": 3, "timeout": 30.0}
+
 
 def _artifact_refs(result):
     refs = []
@@ -181,5 +184,37 @@ def accept_stable_mokahr_snapshots(result, source_url, *, max_files=100,
     return result
 
 
-__all__ = ["AUDITABLE_TERMINALS", "accept_complete_list",
-           "accept_stable_mokahr_snapshots"]
+def accept_substantial_partial_list(result, *, min_jobs=DEFAULT_SUBSTANTIAL_JOB_COUNT):
+    """Temporarily accept a useful large list without claiming pagination completeness."""
+    result = deepcopy(result)
+    jobs = result.get("jobs")
+    coverage = result.get("coverage")
+    if (result.get("status") != "partial" or not isinstance(jobs, list)
+            or not isinstance(coverage, dict) or coverage.get("list_complete") is True):
+        return result
+    structured = [job for job in jobs if isinstance(job, dict)
+                  and isinstance(job.get("title"), str) and job["title"].strip()]
+    stop_reason = coverage.get("stop_reason")
+    if len(structured) < min_jobs or not isinstance(stop_reason, str) or not stop_reason:
+        return result
+    coverage.update(list_complete=False, temporary_acceptance={
+            "accepted": True,
+            "kind": "substantial_job_list",
+            "job_count": len(structured),
+            "threshold": min_jobs,
+            "pagination_complete": False,
+            "original_status": "partial",
+            "stop_reason": stop_reason,
+        })
+    coverage.setdefault("jd_complete", False)
+    result["status"] = "ok"
+    warning = "Large job list accepted temporarily; pagination completeness remains unverified"
+    if warning not in result.setdefault("warnings", []):
+        result["warnings"].append(warning)
+    return result
+
+
+__all__ = ["AUDITABLE_TERMINALS", "DEFAULT_SUBSTANTIAL_JOB_COUNT",
+           "GENERIC_BROWSER_LIMITS",
+           "accept_complete_list", "accept_stable_mokahr_snapshots",
+           "accept_substantial_partial_list"]

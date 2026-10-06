@@ -41,6 +41,9 @@ class MockTools:
     async def wechat(self, url, artifact_dir, options=None):
         return await self._call("wechat", url, artifact_dir, options)
 
+    async def wjx_form(self, url, artifact_dir, options=None):
+        return await self._call("wjx_form", url, artifact_dir, options)
+
     async def feishu_list(self, url, artifact_dir, options=None):
         return await self._call("feishu_list", url, artifact_dir, options)
 
@@ -61,7 +64,8 @@ def test_generic_preserves_evidence_and_options():
     tools = MockTools(original)
     options = {"max_images": 3, "search_terms": ["A"], "browser": "auto"}
     result = acquire(tools, options=options)
-    assert tools.calls == [("web", "https://example.test/", "artifacts", options)]
+    assert tools.calls == [("web", "https://example.test/", "artifacts",
+                            {**options, "browser": False, "max_scrolls": 0})]
     assert result["jobs"] == original["jobs"]
     assert result["images"] == original["images"]
     assert result["attempts"] == original["attempts"]
@@ -70,7 +74,103 @@ def test_generic_preserves_evidence_and_options():
     assert trace["tool_metadata"] == original["acquisition"]
     assert trace["provenance"][0]["acquisition"] == original["acquisition"]
     assert trace["attempts"][0]["status"] == "ok"
+    assert trace["adapter_pool"]["attempts"][0]["adapter"] == "genericweb"
     assert options["max_images"] == 3 and "acquisition" in original
+
+
+def test_substantial_partial_list_is_temporarily_accepted_without_claiming_completeness():
+    jobs = [{"id": str(index), "title": f"Role {index}", "url": ""} for index in range(20)]
+    tools = MockTools(doc(status="partial", jobs=jobs,
+                          coverage={"complete": False, "list_complete": False,
+                                    "stop_reason": "unknown_pagination"}))
+    result = acquire(tools)
+    assert result["status"] == "ok"
+    assert result["coverage"]["list_complete"] is False
+    assert result["coverage"]["temporary_acceptance"]["job_count"] == 20
+    assert result["coverage"]["stop_reason"] == "unknown_pagination"
+    assert result["coverage"]["temporary_acceptance"]["stop_reason"] == "unknown_pagination"
+
+
+def test_generic_empty_static_uses_one_strictly_bounded_browser_fallback():
+    static = doc(status="partial", text="", coverage={
+        "complete": False, "list_complete": False, "stop_reason": "empty_static"
+    })
+    dynamic = doc(status="partial", method="browser", text="招聘岗位 " * 30,
+                  jobs=[{"title": "AI engineer"}], coverage={
+                      "complete": False, "list_complete": False,
+                      "stop_reason": "max_pages"})
+    tools = MockTools(static, dynamic)
+    result = acquire(tools, options={"max_pages": 99, "max_scrolls": 99,
+                                     "timeout": 999})
+    assert len(tools.calls) == 2
+    assert tools.calls[0][3]["browser"] is False
+    assert tools.calls[1][3] == {"max_pages": 3, "max_scrolls": 3,
+                                 "timeout": 30.0, "browser": True,
+                                 "retries": 0, "max_images": 0}
+    fallback = result["coverage"]["dynamic_fallback"]
+    assert fallback["attempt_count"] == 1 and fallback["credentials_used"] is False
+    attempts = result["acquisition"]["adapter_pool"]["attempts"]
+    assert [item["method"] for item in attempts] == ["http", "browser"]
+    assert [item["ordinal"] for item in attempts] == [1, 2]
+
+
+def test_generic_effective_static_content_never_starts_browser():
+    tools = MockTools(doc(status="partial", jobs=[{"title": "AI engineer"}],
+                          coverage={"complete": False, "list_complete": False,
+                                    "stop_reason": "unknown_pagination"}))
+    result = acquire(tools)
+    assert result["status"] == "partial" and len(tools.calls) == 1
+
+
+def test_generic_browser_failure_preserves_static_evidence():
+    static = doc(status="partial", text="", coverage={
+        "complete": False, "list_complete": False, "stop_reason": "empty_static"
+    })
+    tools = MockTools(static, RuntimeError("browser unavailable"))
+    result = acquire(tools)
+    assert result["status"] == "partial"
+    assert result["coverage"]["stop_reason"] == "empty_static"
+    assert result["coverage"]["dynamic_fallback"]["error_type"] == "RuntimeError"
+    attempts = result["acquisition"]["adapter_pool"]["attempts"]
+    assert len(attempts) == 2 and attempts[1]["status"] == "error"
+
+
+@pytest.mark.parametrize("url", [
+    "https://mp.weixin.qq.com/s?a=1",
+    "https://www.wjx.cn/vm/example.aspx",
+])
+def test_limited_source_is_never_temporarily_promoted(url):
+    jobs = [{"title": f"AI role {index}"} for index in range(20)]
+    tools = MockTools(doc(url, status="partial", jobs=jobs, coverage={
+        "complete": False, "list_complete": False, "stop_reason": "limited_source"
+    }))
+    result = acquire(tools, url)
+    assert result["status"] == "partial"
+    assert "temporary_acceptance" not in result["coverage"]
+
+
+def test_fixed_51job_route_does_not_fall_back_to_generic_pool():
+    url = "https://campus.51job.com/Innovent2027/"
+    tools = MockTools(doc(url, status="error", coverage={
+        "complete": False, "list_complete": False, "stop_reason": "browser_error"
+    }))
+    result = acquire(tools, url)
+    assert len(tools.calls) == 1
+    assert result["acquisition"]["adapter"] == "Job51StaticPortal"
+    assert result["acquisition"]["adapter_pool"]["fixed_route"] is True
+
+
+@pytest.mark.parametrize("url", [
+    "https://jobs.51job.com/example",
+    "https://www.51job.com/",
+    "https://campus.51job.com/",
+    "https://tenant.jobs.feishu.cn/about",
+])
+def test_unmatched_reserved_hosts_cannot_enter_generic_pool(url):
+    with pytest.raises(ValueError, match="no adapter supports"):
+        AdapterRegistry().select(url)
+    result = acquire(MockTools(), url, {"adapter": "genericweb"})
+    assert result["error_kind"] == "unsupported_adapter"
 
 
 @pytest.mark.parametrize("url,expected", [
@@ -86,23 +186,11 @@ def test_generic_preserves_evidence_and_options():
     ("https://tenant.jobs.feishu.cn/2027/position/list/", "FeishuPublicPortal"),
     ("https://tenant.jobs.feishu.cn/#/position/list", "FeishuPublicPortal"),
     ("https://tenant.jobs.feishu.cn/", "FeishuPublicPortal"),
-    ("https://tenant.jobs.feishu.cn/position/123", "genericweb"),
-    ("https://tenant.jobs.feishu.cn/position/detail/123", "genericweb"),
-    ("https://tenant.jobs.feishu.cn/2027/position/list/detail/123", "genericweb"),
-    ("https://tenant.jobs.feishu.cn/2027/position/listing", "genericweb"),
-    ("https://tenant.jobs.feishu.cn/huixicampus/position/detail/42", "genericweb"),
-    ("https://tenant.jobs.feishu.cn/#/position/detail/123", "genericweb"),
-    ("https://tenant.jobs.feishu.cn/about", "genericweb"),
     ("https://tenant.jobs.feishu.cn.evil.test/position/list", "genericweb"),
     ("https://eviljobs.feishu.cn/position/list", "genericweb"),
     ("https://xyz.51job.com/consumer/pc/home/index?ctmid=9588338", "Job51XYZPublicPortal"),
-    ("https://xyz.51job.com/consumer/pc/home/job?ctmid=9588338&_jobId=x", "genericweb"),
     ("https://campus.51job.com/Innovent2027/index2.html", "Job51StaticPortal"),
     ("https://campus.51job.com/Innovent2027/", "Job51StaticPortal"),
-    ("https://campus.51job.com/", "genericweb"),
-    ("https://campus.51job.com/Innovent2027/js/data.js", "genericweb"),
-    ("https://jobs.51job.com/example", "genericweb"),
-    ("https://www.51job.com/", "genericweb"),
     ("https://tenant.zhiye.com/campus/detail?jobAdId=abc", "ZhiyeJobDetailPortal"),
     ("https://tenant.zhiye.com/campus/jobdetails?jobId=123", "ZhiyeJobDetailPortal"),
 ])
@@ -675,7 +763,7 @@ def test_default_tools_lazy_import(monkeypatch):
     from types import ModuleType
 
     module = ModuleType("jobprep.app")
-    tools = MockTools(doc())
+    tools = MockTools(doc(text="招聘职位 " * 30))
     module.AppTools = lambda: tools
     monkeypatch.setitem(sys.modules, "jobprep.app", module)
     result = asyncio.run(AdapterRegistry().acquire("https://example.test/", "artifacts"))
