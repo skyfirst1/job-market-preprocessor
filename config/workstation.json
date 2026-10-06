@@ -1,0 +1,38 @@
+{
+  "ocr_max_calls": 50,
+  "ocr_model": "general_basic",
+  "ocr_high_accuracy_retry": false,
+  "max_details_per_page": 100,
+  "ocr_enabled": true,
+  "runner": {
+    "max_attempts": 3,
+    "automatic_retry": true,
+    "base_delay_seconds": 5,
+    "max_delay_seconds": 60,
+    "wait_for_retries": true,
+    "max_wait_seconds": 60
+  },
+  "list_sources": {
+    "https://join.qq.com/post.html": "config/tencent_campus.json",
+    "https://careers.tencent.com/search.html": "config/tencent_public.json",
+    "https://hr.163.com/job-list.html": "config/netease_public.json"
+  },
+  "crawl": {
+    "browser": "auto",
+    "max_pages": 3,
+    "max_scrolls": 3,
+    "max_images": 8,
+    "timeout": 20,
+    "delay": 1.2
+  },
+  "sites": {
+    "jobs.feishu.cn": {"max_pages": 100, "max_images": 0},
+    "mp.weixin.qq.com": {"max_images": 30, "timeout": 20, "interval": 15, "max_requests": 80, "browser_channel": "chrome"},
+    "app.mokahr.com": {"browser": true, "max_pages": 30, "max_scrolls": 8, "settle_ms": 1200, "max_json_responses": 200},
+    "zhiye.com": {"browser": true, "max_pages": 10, "max_scrolls": 8, "settle_ms": 1500, "max_json_responses": 80},
+    "51job.com": {"browser": true, "max_pages": 10, "max_scrolls": 8, "settle_ms": 1200, "max_json_responses": 80},
+    "hotjob.cn": {"browser": true, "max_pages": 10, "max_scrolls": 8, "settle_ms": 1200, "max_json_responses": 80},
+    "career.huawei.com": {"browser": true, "max_pages": 5},
+    "campus-talent.alibaba.com": {"browser": true, "max_pages": 5}
+  }
+}

@@ -1,0 +1,12 @@
+{
+  "company": "NetEase",
+  "scope": "hr.163.com public default job list; all products and work types; separate campus site not covered",
+  "url": "https://hr.163.com/api/hr163/position/queryPage",
+  "method": "POST",
+  "headers": {"Referer": "https://hr.163.com/job-list.html"},
+  "body": {"pageSize": 60},
+  "pagination": {"location": "body", "path": "currentPage", "start": 1, "max_pages": 200},
+  "response": {"items_path": "data.list", "total_path": "data.total", "total_pages_path": "data.pages", "id_path": "id", "success_path": "code", "success_value": 200},
+  "fields": {"title": "name", "category": "firstPostTypeName", "location": "workPlaceNameList", "dept": "productName", "description": "description", "requirements": "requirement", "work_type": "workType", "education": "reqEducationName", "experience": "reqWorkYearsName"},
+  "http": {"interval": 1.2, "timeout": 20, "retries": 2, "backoff": 1}
+}

@@ -1,0 +1,11 @@
+{
+  "company": "Tencent",
+  "scope": "careers.tencent.com public unfiltered list; all recruitment attributes and countries; not a campus-only list",
+  "url": "https://careers.tencent.com/tencentcareer/api/post/Query",
+  "headers": {"Referer": "https://careers.tencent.com/search.html"},
+  "query": {"countryId": "", "cityId": "", "bgIds": "", "productId": "", "categoryId": "", "parentCategoryId": "", "attrId": "", "keyword": "", "pageSize": 60, "language": "zh-cn", "area": "cn"},
+  "pagination": {"location": "query", "path": "pageIndex", "start": 1, "max_pages": 100},
+  "response": {"items_path": "Data.Posts", "total_path": "Data.Count", "id_path": "PostId", "success_path": "Code", "success_value": 200},
+  "fields": {"title": "RecruitPostName", "category": "CategoryName", "location": "LocationName", "dept": "BGName", "description": "Responsibility", "url": "PostURL", "post_id": "PostId", "experience": "RequireWorkYearsName"},
+  "http": {"interval": 1.2, "timeout": 20, "retries": 2, "backoff": 1}
+}

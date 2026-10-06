@@ -1,0 +1,9 @@
+{
+  "company": "NetEase", "scope": "campus.163.com public 2027 internet campus project 103, unfiltered",
+  "url": "https://campus.163.com/api/campuspc/position/getJobList",
+  "query": {"projectId": 103, "pageSize": 60},
+  "pagination": {"location": "query", "path": "currentPage", "max_pages": 100},
+  "response": {"items_path": "data.list", "total_path": "data.total", "total_pages_path": "data.pages", "id_path": "id", "success_path": "code", "success_value": 200},
+  "fields": {"title": "positionName", "category": "positionTypeName", "location": "workPlaceName", "description": "positionDescription", "requirements": "positionRequirement", "project_id": "projectId"},
+  "http": {"interval": 1.2, "timeout": 20, "retries": 2}
+}

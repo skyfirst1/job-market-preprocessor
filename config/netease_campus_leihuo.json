@@ -1,0 +1,9 @@
+{
+  "company": "NetEase", "scope": "xiaozhao.leihuo.netease.com public 2027 campus project 77, unfiltered",
+  "url": "https://xiaozhao.leihuo.netease.com/api/apply/job/list/show",
+  "query": {"project_id": 77, "job_name": "", "page_size": 60},
+  "pagination": {"location": "query", "path": "page_number", "max_pages": 100},
+  "response": {"items_path": "data.apply_job_list", "total_path": "data.count_number", "total_pages_path": "data.pages_count", "id_path": "ehr_job_id", "success_path": "status", "success_value": 200},
+  "fields": {"title": "job_name", "category": "category_name", "location": "work_place_name", "dept": "department_name", "description": "job_description", "requirements": "job_requirement", "url": "job_detail_url", "project_id": "ehr_project_id", "recruit_label": "target"},
+  "http": {"interval": 1.2, "timeout": 20, "retries": 2}
+}

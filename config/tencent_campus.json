@@ -1,0 +1,12 @@
+{
+  "company": "Tencent",
+  "scope": "join.qq.com current five public campus/internship project mappings; all locations; no keyword filter",
+  "url": "https://join.qq.com/api/v1/position/searchPosition",
+  "method": "POST",
+  "headers": {"Referer": "https://join.qq.com/post.html"},
+  "body": {"projectIdList": [], "projectMappingIdList": [1, 2, 104, 14, 20], "keyword": "", "bgList": [], "workCountryType": 0, "workCityList": [], "recruitCityList": [], "positionFidList": [], "pageSize": 60},
+  "pagination": {"location": "body", "path": "pageIndex", "start": 1, "max_pages": 100},
+  "response": {"items_path": "data.positionList", "total_path": "data.count", "id_path": "id", "success_path": "status", "success_value": 0, "null_items_are_empty": true},
+  "fields": {"title": "positionTitle", "location": "workCities", "dept": "bgs", "url": "positionUrl", "post_id": "postId", "project": "projectName", "recruit_label": "recruitLabelName"},
+  "http": {"interval": 1.2, "timeout": 20, "retries": 2, "backoff": 1}
+}
