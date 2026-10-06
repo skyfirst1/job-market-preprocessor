@@ -81,13 +81,13 @@ PURPOSES = {
 
 VISIBLE_DELIVERIES = {
     "核心目标结果": (
-        "exports/targets/summary.json",
-        "exports/targets/applicable_companies.csv",
-        "exports/targets/job_targets.csv",
-        "exports/targets/verified_companies.csv",
-        "exports/targets/verified_job_targets.csv",
-        "exports/targets/pending_discovery_companies.csv",
-        "exports/targets/error_companies.csv",
+        "exports/targets_combined/summary.json",
+        "exports/targets_combined/applicable_companies.csv",
+        "exports/targets_combined/job_targets.csv",
+        "exports/targets_combined/verified_companies.csv",
+        "exports/targets_combined/verified_job_targets.csv",
+        "exports/targets_combined/pending_discovery_companies.csv",
+        "exports/targets_combined/error_companies.csv",
     ),
     "当前运行状态": (
         "exports/operations_dashboard/subagent1.json",
@@ -383,8 +383,9 @@ def build_catalog() -> tuple[dict[str, Path], list[dict[str, object]]]:
         add(DASHBOARD_ROOT / name)
     add(PROJECT_ROOT / "data" / "agent_reports" / "subagent2.json")
     add(PROJECT_ROOT / "data" / "agent_reports" / "subagent4.json")
-    for path in (PROJECT_ROOT / "exports" / "targets").glob("*"):
-        add(path)
+    for target_dir in ("targets", "targets_manufacturing", "targets_combined"):
+        for path in (PROJECT_ROOT / "exports" / target_dir).glob("*"):
+            add(path)
     for name in FIRST_BATCH_REPORTS:
         add(PROJECT_ROOT / "data" / "first_batch" / name)
     for path in (PROJECT_ROOT / "data" / "batches").glob("**/*"):
@@ -414,6 +415,7 @@ def build_catalog() -> tuple[dict[str, Path], list[dict[str, object]]]:
         return {
             "type": "file",
             "name": path.name,
+            "path": relative,
             "extension": path.suffix[1:].upper(),
             "href": "/view/" + quote(relative, safe="/"),
             "purpose": PURPOSES.get(path.name, "重要交付文件"),

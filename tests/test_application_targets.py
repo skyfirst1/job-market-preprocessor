@@ -10,7 +10,7 @@ def candidate(**overrides):
     row = {
         "company": "甲医疗", "enterprise_nature": "民企", "ownership_status": "非国企（CSV标注）",
         "industry": "医疗/医药/生物", "matched_roles": json.dumps([
-            {"priority": 1, "category": "视觉相关AI/深度学习算法", "role": "医学图像算法工程师"},
+            {"priority": 1, "category": "视觉相关AI/深度学习算法", "role": "医学影像深度学习算法工程师"},
             {"priority": 2, "category": "Agent/大模型开发", "role": "Agent开发工程师"},
         ], ensure_ascii=False),
         "best_priority": "1", "announcement_url": "https://example.com/news",
@@ -104,6 +104,30 @@ def test_structured_job_can_discover_role_after_blank_csv_signal():
     assert jobs[0]["details_verified"] == "true"
 
 
+def test_generic_image_processing_requires_affirmative_ai_evidence():
+    row = candidate(best_priority="", matched_roles="[]")
+    store = {"https://example.com/jobs": {
+        "status": "ok", "updated_at": "2026-10-06T00:00:00+00:00", "error": "",
+        "result": {"title": "招聘", "text": "", "coverage": {}, "jobs": [
+            {"title": "图像处理工程师", "description": "负责图像增强、拼接和去噪"},
+            {"title": "影像处理工程师", "description": "调用视觉库完成功能开发", "requirements": "了解深度学习基础部署者优先"},
+            {"title": "图像算法工程师", "description": "训练深度学习目标检测模型"},
+        ]},
+    }}
+    _, jobs = build_rows([row], store)
+    assert [job["role_title"] for job in jobs] == ["图像算法工程师"]
+    assert "深度学习目标检测模型" in jobs[0]["evidence"]
+
+
+def test_csv_generic_image_role_does_not_override_evidence_boundary():
+    row = candidate(matched_roles=json.dumps([{
+        "priority": 1, "category": "视觉相关AI/深度学习算法", "role": "图像处理工程师"
+    }], ensure_ascii=False))
+    companies, jobs = build_rows([row], {})
+    assert companies[0]["target_status"] == "待页面发现目标岗位"
+    assert jobs == []
+
+
 def test_large_model_algorithm_is_secondary_algorithm_not_deep_learning_priority():
     row = candidate(matched_roles=json.dumps([{
         "priority": 1, "category": "旧分类", "role": "大模型算法科学家（机器学习/深度学习）"
@@ -190,7 +214,7 @@ def test_structured_job_evidence_upgrades_only_matching_role():
     store = {"https://example.com/jobs": {
         "status": "ok", "updated_at": "2026-10-06T00:00:00+00:00", "error": "",
         "result": {"title": "招聘", "text": "", "coverage": {"stop_reason": "complete"}, "jobs": [{
-            "title": "医学图像算法工程师", "url": "https://example.com/jobs/1",
+            "title": "医学影像深度学习算法工程师", "url": "https://example.com/jobs/1",
             "description": "负责医学影像分割", "requirements": "深度学习", "location": "上海",
         }]},
     }}
@@ -213,6 +237,38 @@ def test_update_waits_below_threshold_without_stage_marker(tmp_path: Path):
     assert not (tmp_path / "out").exists()
 
 
+def test_update_can_strictly_exclude_wechat_candidates(tmp_path: Path):
+    source = tmp_path / "candidates.csv"
+    rows = [
+        candidate(company="乙制造", industry="制造业", source_pool="web"),
+        candidate(
+            company="丙制造",
+            industry="制造业",
+            source_pool="wechat",
+            application_url="https://mp.weixin.qq.com/s/example",
+            acquisition_url="https://mp.weixin.qq.com/s/example",
+        ),
+    ]
+    with source.open("w", encoding="utf-8-sig", newline="") as handle:
+        writer = csv.DictWriter(handle, fieldnames=list(rows[0]))
+        writer.writeheader(); writer.writerows(rows)
+    summary = tmp_path / "summary.json"
+    summary.write_text('{"stage_complete": true}', encoding="utf-8")
+    result = update_application_targets(
+        source,
+        summary,
+        tmp_path / "missing.sqlite3",
+        tmp_path / "out",
+        screening_scope="manufacturing",
+        industry_pattern="制造业",
+        exclude_wechat=True,
+        strict_input=True,
+    )
+    assert result["analyzed_companies"] == 1
+    with (tmp_path / "out" / "applicable_companies.csv").open(encoding="utf-8-sig", newline="") as handle:
+        assert [row["company"] for row in csv.DictReader(handle)] == ["乙制造"]
+
+
 def test_stage_marker_writes_deduplicated_outputs(tmp_path: Path):
     source = tmp_path / "candidates.csv"
     rows = [candidate(), candidate()]
@@ -225,7 +281,7 @@ def test_stage_marker_writes_deduplicated_outputs(tmp_path: Path):
         db.execute("CREATE TABLE tasks(url TEXT,status TEXT,updated_at TEXT,error TEXT,result_json TEXT)")
         db.execute("INSERT INTO tasks VALUES(?,?,?,?,?)", (
             "https://example.com/jobs", "ok", "2026-10-06T00:00:00+00:00", "",
-            json.dumps({"text": "医学图像算法工程师\nAgent开发工程师", "jobs": [], "coverage": {}}),
+            json.dumps({"text": "医学影像深度学习算法工程师\nAgent开发工程师", "jobs": [], "coverage": {}}),
         ))
     result = update_application_targets(source, summary, database, tmp_path / "out")
     assert result["applicable_companies"] == 1

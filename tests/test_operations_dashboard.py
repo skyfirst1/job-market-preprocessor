@@ -48,6 +48,16 @@ def test_delivery_tree_only_contains_canonical_results_status_and_final_audits()
     }
     assert "data/audits/continuous_adapter_report.json" in catalog
     assert "continuous_adapter_report.json" not in visible
+    core_paths = {child["path"] for child in groups[0]["children"]}
+    assert core_paths == {
+        "exports/targets_combined/summary.json",
+        "exports/targets_combined/applicable_companies.csv",
+        "exports/targets_combined/job_targets.csv",
+        "exports/targets_combined/verified_companies.csv",
+        "exports/targets_combined/verified_job_targets.csv",
+        "exports/targets_combined/pending_discovery_companies.csv",
+        "exports/targets_combined/error_companies.csv",
+    }
 
 
 def test_csv_preview_has_search_sort_counts_expansion_and_safe_links(tmp_path):

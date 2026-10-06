@@ -19,7 +19,22 @@ TARGET_REGION = re.compile(r"四川|成都|北京|上海|广州|全国(?:各地|
 ROLE_PATTERNS = (
     (3, re.compile(r"(?:Agent|智能体|大模型|LLM|自然语言处理|NLP).{0,12}(?:算法|研究|训练|推理)", re.I)),
     (2, re.compile(r"(?:Agent|智能体|大模型|LLM).{0,12}(?:开发|研发|工程|应用|Infra)|RAG", re.I)),
-    (1, re.compile(r"计算机视觉|机器视觉|视觉算法|图像(?:处理|算法|识别|分割)|医学影像|影像算法|目标检测|深度学习", re.I)),
+    (1, re.compile(
+        r"计算机视觉|机器视觉|视觉AI|视觉.{0,4}算法|目标检测|深度学习|"
+        r"(?:机器学习|CNN|Transformer|ViT|多模态).{0,20}(?:视觉|图像|影像)|"
+        r"(?:视觉|图像|影像).{0,20}(?:机器学习|深度学习|CNN|Transformer|ViT|多模态|模型训练|训练模型)",
+        re.I,
+    )),
+)
+GENERIC_IMAGE_ROLE = re.compile(
+    r"图像(?:处理|算法|识别|分割)|医学影像|影像算法|重建|渲染|\bISP\b|OpenCV",
+    re.I,
+)
+GENERIC_IMAGE_AI_EVIDENCE = re.compile(
+    r"(?:训练|微调|开发|研发|设计|优化|评估)[^。；;\n]{0,16}"
+    r"(?:深度学习|机器学习|CNN|Transformer|ViT|多模态)[^。；;\n]{0,12}(?:模型|算法|检测|分割|分类|识别|跟踪|姿态|生成)?|"
+    r"(?:计算机视觉|机器视觉|视觉AI|深度学习)[^。；;\n]{0,16}(?:模型|算法)[^。；;\n]{0,16}(?:训练|微调|开发|研发|设计|优化|评估)",
+    re.I,
 )
 PRIORITY_LABELS = {
     1: "视觉相关AI/深度学习算法",
@@ -89,6 +104,15 @@ def _read_json(path: Path) -> dict[str, Any]:
     return json.loads(path.read_text(encoding="utf-8")) if path.is_file() else {}
 
 
+def _is_wechat_candidate(row: dict[str, Any]) -> bool:
+    if _clean(row.get("source_pool")).casefold() == "wechat":
+        return True
+    for field in ("acquisition_url", "application_url"):
+        if (urlsplit(_clean(row.get(field))).hostname or "").casefold() == "mp.weixin.qq.com":
+            return True
+    return False
+
+
 def _roles(row: dict[str, str]) -> list[dict[str, Any]]:
     try:
         raw = json.loads(row.get("matched_roles") or "[]")
@@ -109,7 +133,8 @@ def _roles(row: dict[str, str]) -> list[dict[str, Any]]:
             classified = _classify(title)
             # A single role keeps the explicit CSV category (for example "AI算法工程师").
             # When a dense company-wide role string is split, every child must qualify itself.
-            effective_priority = classified or (priority if len(expanded) == 1 else None)
+            csv_fallback_allowed = not GENERIC_IMAGE_ROLE.search(title)
+            effective_priority = classified or (priority if len(expanded) == 1 and csv_fallback_allowed else None)
             key = (effective_priority or 0, title.casefold())
             if title and effective_priority in PRIORITY_LABELS and key not in seen:
                 output.append({"priority": effective_priority, "category": PRIORITY_LABELS[effective_priority], "role": title, "origin": "csv"})
@@ -166,11 +191,20 @@ def _discovered_roles(row: dict[str, str], structured_jobs: list[dict[str, Any]]
             continue
         title = _clean_job_title(job.get("title"))
         priority = _classify(title)
-        if priority is None and re.fullmatch(r"(?:AI)?(?:算法|开发|研发)工程师(?:[-（(].*)?", title, re.I):
+        if priority is None and GENERIC_IMAGE_ROLE.search(title):
+            priority = 1 if GENERIC_IMAGE_AI_EVIDENCE.search(_job_text(job)) else None
+        elif priority is None and re.fullmatch(r"(?:AI)?(?:算法|开发|研发)工程师(?:[-（(].*)?", title, re.I):
             priority = _classify(_job_text(job))
         key = (priority or 0, title.casefold())
         if title and priority and key not in seen:
-            roles.append({"priority": priority, "category": PRIORITY_LABELS[priority], "role": title, "origin": "structured_job"})
+            roles.append({
+                "priority": priority,
+                "category": PRIORITY_LABELS[priority],
+                "role": title,
+                "origin": "structured_job",
+                "matched": job,
+                "evidence_excerpt": _job_text(job)[:360],
+            })
             seen.add(key)
     # Structured records supersede rendered page lines, which often repeat titles with UI labels.
     fallback_lines = [] if structured_jobs else page_text.splitlines()
@@ -670,11 +704,18 @@ def update_application_targets(
     audit_path: Path | None = None,
     screening_scope: str = "medical",
     industry_pattern: re.Pattern[str] | str | None = None,
+    exclude_wechat: bool = False,
+    strict_input: bool = False,
 ) -> dict[str, Any]:
     candidates = _read_csv(candidates_path)
+    if exclude_wechat:
+        candidates = [row for row in candidates if not _is_wechat_candidate(row)]
     batch_summary = _read_json(summary_path)
     store = load_store_results(database_path)
-    candidates = _augment_limited_source_candidates(candidates, store)
+    if not strict_input:
+        candidates = _augment_limited_source_candidates(candidates, store)
+    if exclude_wechat:
+        candidates = [row for row in candidates if not _is_wechat_candidate(row)]
     unique_companies = len({_clean(row.get("company")) for row in candidates if _clean(row.get("company"))})
     triggered = force or unique_companies >= 20 or bool(batch_summary.get("stage_complete"))
     if not triggered:
