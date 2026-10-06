@@ -127,7 +127,8 @@ def main() -> None:
     if wechat_rows:
         commands.append(("wechat", [sys.executable, str(root / "scripts" / "run_wechat_pool.py"),
             "--root", str(root), "--input", str(wechat_queue), "--limit", str(len(wechat_rows)),
-            "--interval", "10", "--batch", name, "--report", str(wechat_report)]))
+            "--min-interval", "180", "--max-interval", "300",
+            "--batch", name, "--report", str(wechat_report)]))
     else:
         atomic_json(wechat_report, {"state": "completed", "enqueued": 0, "processed": 0,
                                     "succeeded": 0, "failed": 0})

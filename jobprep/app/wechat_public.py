@@ -23,7 +23,7 @@ from jobprep.html_extract import BLOCKED_RE, DELETED_RE
 from .tools import directory, empty_document, image_dimensions, save_bytes
 
 VERSION = 'public-wechat-v1'
-# The runner enforces a finite batch (20 by default) and a 10-second start interval.
+# The runner enforces a finite batch and a randomized 3-5 minute article start interval.
 MAX_NEW_ARTICLES_24H = 20
 SESSION_KEYS = {'key', 'uin', 'pass_ticket', 'exportkey', 'token', 'access_token', 'auth', 'cookie'}
 IDENTITY_KEYS = {'__biz', 'mid', 'idx', 'sn'}

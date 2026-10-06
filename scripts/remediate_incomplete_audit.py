@@ -241,7 +241,8 @@ async def remediate(root: Path, audit_path: Path, json_path: Path, csv_path: Pat
                 "calls_after": calls_after, "new_calls": calls_after - calls_before,
                 "budget_raised": False},
         "wechat": {"network_revisited": False, "single_concurrency": 1,
-                   "minimum_interval_seconds": 10, "failure_circuit_breaker": 11},
+                   "minimum_interval_seconds": 180, "maximum_interval_seconds": 300,
+                   "failure_circuit_breaker": 11},
         "items": output_rows,
     }
     atomic_json(json_path, report)

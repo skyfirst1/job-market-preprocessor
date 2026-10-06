@@ -72,7 +72,7 @@ ul{{margin:4px 0;padding-left:20px}} code{{white-space:normal;overflow-wrap:anyw
 </style></head><body>
 <h1>{value('agent')} <span class="{state_class}">{value('status')}</span></h1>
 <div class="muted">{value('role')} · 每 10 秒自动刷新</div>
-<div class="policies"><span class="pill good">微信单并发：启用</span><span class="pill good">启动间隔 ≥10秒：启用</span><span class="pill {circuit_class}">失败第11篇熔断：{'已熔断' if circuit else '监控中'}</span><span class="pill good">成功链接永久跳过：启用</span></div>
+<div class="policies"><span class="pill good">微信单并发：启用</span><span class="pill good">篇间随机 3–5 分钟：启用</span><span class="pill {circuit_class}">失败第11篇熔断：{'已熔断' if circuit else '监控中'}</span><span class="pill good">成功链接永久跳过：启用</span></div>
 <div class="grid">
 <div class="metric">候选<b>{value('candidates','0')}</b></div><div class="metric">处理<b>{value('processed','0')}</b></div><div class="metric">成功<b>{value('success','0')}</b></div>
 <div class="metric">部分成功<b>{value('partial','0')}</b></div><div class="metric">失败<b>{value('failed','0')}</b></div><div class="metric">本批错误<b>{value('errors','0')}</b></div>

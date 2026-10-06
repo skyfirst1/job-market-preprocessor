@@ -182,7 +182,7 @@ def checkpoint_processor(root: Path, *, no_ocr: bool, browser_channel: str,
         prepare_zero_request_budget_retry(root, url)
         command = [
             sys.executable, "-m", "jobprep", "--root", str(root), "wechat-run",
-            "--url", url, "--limit", "1", "--interval", "10",
+            "--url", url, "--limit", "1", "--min-interval", "180", "--max-interval", "300",
             "--browser-channel", browser_channel,
         ]
         if no_ocr:
@@ -284,7 +284,7 @@ def main(argv: list[str] | None = None) -> dict:
             checkpoint_processor(root, no_ocr=args.no_ocr,
                                  browser_channel=args.browser_channel,
                                  budget_limit=budget_limit),
-            PoolPolicy(min_interval_seconds=10.0, max_failures=10),
+            PoolPolicy(min_interval_seconds=180.0, max_interval_seconds=300.0, max_failures=10),
             progress=progress,
         )
         run_report = asyncio.run(runner.run(limit=EXPECTED_ITEMS, retry_failed=False))
